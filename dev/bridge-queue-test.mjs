@@ -102,6 +102,12 @@ check('收到 hello-ack', ack?.type === 'hello-ack', JSON.stringify(ack));
 const statusAfterHello = await getStatus();
 check('/status 里带上了 instance（可用于区分同浏览器多 Profile）',
   statusAfterHello.clients.some((c) => c.instance === INSTANCE), JSON.stringify(statusAfterHello.clients));
+// 版本必须能从 /status 一眼读到：否则"这次重载生效了吗"只能靠时间戳 + 试探命令反推。
+check('/status 暴露当前生效的扩展版本（顶层 extensionVersion）',
+  statusAfterHello.extensionVersion === 'test', JSON.stringify({ got: statusAfterHello.extensionVersion }));
+check('每个 client 也带 version（多浏览器时能分别看）',
+  statusAfterHello.clients.every((c) => c.version === 'test'),
+  JSON.stringify(statusAfterHello.clients.map((c) => c.version)));
 
 /* ------------------------------------------------------------------ 1. 同标签页串行 */
 

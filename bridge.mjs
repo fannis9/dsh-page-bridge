@@ -351,6 +351,9 @@ function handleMessage(client, msg) {
     client.label = msg.agent ?? 'unknown';
     if (msg.browser) client.browser = msg.browser;
     if (msg.instance) client.instance = String(msg.instance);
+    // 记下扩展版本：外部的"这次重载到底生效没"就该是一个字段能回答的问题，
+    // 而不是靠 since 时间戳 + 试一条会走 POLICY 的命令去反推。
+    if (msg.version) client.version = String(msg.version);
     // A relay carries the extension's own hello over its WebSocket uplink, so record the
     // browser-side transport too: /status should say "native" even in relay mode.
     if (msg.via === 'native' && (client.via === 'ws' || client.via === 'relay')) client.via = 'native-relay';
@@ -505,11 +508,14 @@ const server = createServer(async (req, res) => {
       native: NATIVE,
       browsers: browsersOf(),
       effectiveBrowser: effective?.label === 'chrome-extension' ? (effective.browser ?? 'unknown') : null,
+      // 当前生效的扩展版本（没有扩展连接时为 null）。用来回答"重载生效了吗"。
+      extensionVersion: effective?.label === 'chrome-extension' ? (effective.version ?? null) : null,
       clients: [...clients].map((c) => ({
         label: c.label,
         via: c.via,
         browser: c.browser,
         instance: c.instance ?? null,
+        version: c.version ?? null,
         focused: c.focused ?? null,
         since: new Date(c.connectedAt).toISOString(),
         lastSeen: c.lastSeen ? new Date(c.lastSeen).toISOString() : null,

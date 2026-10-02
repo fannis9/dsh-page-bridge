@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from './playwright-runtime.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));

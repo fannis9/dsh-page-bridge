@@ -403,6 +403,8 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    （`/cmd` 回包里带 `browser`），防止动作在 Chrome、快照拍到 Edge。
 7. **同一个浏览器多 Profile 可区分**：hello 里带上每个 Profile 的 `instance` id，`/status` 会显示它；
    `page_use_browser` 支持 `chrome@<instance 前缀>` 精确寻址（只写 `chrome` 时仍按 ID 前缀匹配）。
+   同一份 `/status` 还会给出 **`extensionVersion`**（当前真正生效的扩展版本）——
+   于是"刚才那次重载到底生效没有"是一个字段就能回答的问题，不必再靠 `since` 时间戳加试探命令去反推。
 8. **WS / native 单帧上限 8 MB**：声称超大长度的帧直接断连，不再无限缓冲（本机 DoS）；
    WebSocket 客户端帧还必须 masked，分片和保留位会被拒绝。
 9. **运行期日志有边界**：`events.jsonl` 默认最多 5 MB，超过后从新文件开始记录；落盘 URL 会移除 query/hash，
