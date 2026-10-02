@@ -44,7 +44,7 @@ const makeEvent = () => {
   };
 };
 
-function makePlatform() {
+function makePlatform({ storageDelay = 0 } = {}) {
   const local = new Map([['enabled', true], ['transport', 'auto']]);
   const session = new Map();
 
@@ -78,7 +78,10 @@ function makePlatform() {
     tabUrl: 'https://example.com/',
     storage: {
       local: {
-        get: async (defaults) => Object.fromEntries(Object.entries(defaults ?? {}).map(([k, v]) => [k, local.has(k) ? local.get(k) : v])),
+        get: async (defaults) => {
+          if (storageDelay) await new Promise((resolve) => setTimeout(resolve, storageDelay));
+          return Object.fromEntries(Object.entries(defaults ?? {}).map(([k, v]) => [k, local.has(k) ? local.get(k) : v]));
+        },
         set: async (obj) => { for (const [k, v] of Object.entries(obj)) local.set(k, v); },
       },
       session: {
@@ -145,8 +148,8 @@ const ISOLATED_SENDER = { id: EXT_ID, url: 'https://example.com/' };
 const EDGE_UA = `${CHROME_UA} Edg/154.0.4258.48`;
 
 /** Load background.js in a fresh context with a fake platform. */
-async function loadWorker({ userAgent = CHROME_UA } = {}) {
-  const { chrome, FakeWebSocket } = makePlatform();
+async function loadWorker({ userAgent = CHROME_UA, storageDelay = 0, skipPolicy = false, triggerEarlyActivation = false } = {}) {
+  const { chrome, FakeWebSocket } = makePlatform({ storageDelay });
   const context = vm.createContext({
     chrome,
     // A service worker always has navigator; the extension uses its UA to tell Chrome from
@@ -162,6 +165,7 @@ async function loadWorker({ userAgent = CHROME_UA } = {}) {
   });
   context.globalThis = context;
   context.importScripts = (...paths) => {
+    if (skipPolicy) return;
     for (const path of paths) {
       const source = readFileSync(join(EXTENSION_DIR, path), 'utf8');
       vm.runInContext(source, context, { filename: path });
@@ -173,6 +177,7 @@ async function loadWorker({ userAgent = CHROME_UA } = {}) {
   } catch (error) {
     loadError = error;
   }
+  if (triggerEarlyActivation) chrome.tabs.onActivated.fire({ tabId: 11 });
   await sleep(250);   // let the bootstrap promise resolve
   const status = () => new Promise((resolve) => {
     let answered = false;
@@ -190,6 +195,21 @@ check('模块级求值不抛异常', !worker.loadError, String(worker.loadError?
 if (worker.loadError) process.exit(1);
 check('auto 模式下先尝试 native', worker.chrome.calls.some((c) => c.fn === 'connectNative'), JSON.stringify(worker.chrome.calls));
 check('启动阶段没有抢先建 WebSocket', worker.FakeWebSocket.instances.length === 0, `instances=${worker.FakeWebSocket.instances.length}`);
+
+console.log('\n--- 1b. bootstrap 期间的早期事件不能抢先发 hello ---');
+const delayedWorker = await loadWorker({ storageDelay: 50, triggerEarlyActivation: true });
+const delayedPort = delayedWorker.chrome.ports.at(-1);
+const delayedHello = delayedPort?.sent.find((message) => message.type === 'hello');
+check('storage bootstrap 延迟时仍只发送带 instance 的第一条 hello',
+  typeof delayedHello?.instance === 'string' && delayedHello.instance.length === 16,
+  JSON.stringify(delayedHello));
+
+console.log('\n--- 1c. policy.js 缺失时给出可诊断错误 ---');
+const missingPolicyWorker = await loadWorker({ skipPolicy: true });
+const missingPolicyStatus = await missingPolicyWorker.status();
+check('policy.js 缺失不会静默变成 TypeError',
+  /policy\.js 未加载/.test(missingPolicyStatus?.lastError ?? '') && !/TypeError/.test(missingPolicyStatus?.lastError ?? ''),
+  JSON.stringify(missingPolicyStatus));
 
 /* ------------------------------------------------------------------- test 2 */
 

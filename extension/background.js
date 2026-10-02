@@ -41,7 +41,16 @@ let badgeText = '';
 // Keep the policy implementation independent from the service-worker plumbing so it can
 // be reviewed and unit-tested without evaluating this whole file.
 if (typeof importScripts === 'function') importScripts('policy.js');
-const POLICY = globalThis.DSH_POLICY;
+const POLICY_ERROR = 'policy.js 未加载：检查该文件是否随扩展打包（importScripts 失败或 Service Worker 类型不匹配）';
+const POLICY_LOADED = Boolean(globalThis.DSH_POLICY?.isDomainAllowed && globalThis.DSH_POLICY?.originOf);
+const missingPolicy = () => { throw new Error(POLICY_ERROR); };
+const POLICY = globalThis.DSH_POLICY ?? Object.fromEntries([
+  'normalizePattern', 'hostOf', 'originOf', 'matches', 'isDomainAllowed', 'isProtected', 'sanitizeList',
+].map((name) => [name, missingPolicy]));
+if (!POLICY_LOADED) {
+  lastError = POLICY_ERROR;
+  console.error('[page-bridge]', POLICY_ERROR);
+}
 
 /** Toolbar badge: '' disabled · '·' idle · '···' waiting · 'ON' shared · 'ALL' full access. */
 function paintBadge() {
@@ -751,6 +760,9 @@ let transport = 'auto';       // 'auto' | 'native' | 'ws' (persisted)
 let nativePort = null;        // chrome.runtime.Port while native is live
 let activeTransport = null;   // 'native' | 'ws' | null — what is actually connected
 let wsFallback = false;       // 'auto' mode fell back for this worker's lifetime
+let bootstrapDone = false;
+let bootstrapSucceeded = false;
+let bootstrapPromise = Promise.resolve();
 
 function connected() {
   return Boolean(nativePort) || socket?.readyState === WebSocket.OPEN;
@@ -848,7 +860,11 @@ function scheduleReconnect() {
 }
 
 function connect() {
-  if (!enabled || connected()) return;
+  if (!bootstrapDone) {
+    void bootstrapPromise.then(() => { if (bootstrapSucceeded) connect(); });
+    return;
+  }
+  if (!bootstrapSucceeded || !POLICY_LOADED || !enabled || connected()) return;
   if (transport === 'ws' || wsFallback) { connectWs(); return; }
   connectNative();
 }
@@ -1385,8 +1401,10 @@ chrome.runtime.onInstalled.addListener(connect);
 chrome.alarms.create('page-bridge-reconnect', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'page-bridge-reconnect') connect(); });
 
-// Bootstrap: the persisted master switch, transport and 完全接管 flag win over defaults.
-void Promise.all([
+// Bootstrap: the persisted master switch, transport, instance id and grant must be ready
+// before any event/alarm is allowed to create a transport hello. Otherwise the first hello
+// after a service-worker restart can carry instance: null/'' and break browser pinning.
+bootstrapPromise = Promise.all([
   chrome.storage.local.get({ enabled: true, transport: 'auto', fullAccess: false, wsToken: '', instanceId: '' }),
   readGrant(),
 ]).then(([stored, grant]) => {
@@ -1399,6 +1417,12 @@ void Promise.all([
     : Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
   if (stored.instanceId !== instanceId) void chrome.storage.local.set({ instanceId });
   sharedGrant = grant;
+  bootstrapSucceeded = true;
   paintBadge();
-  if (enabled) connect();
+}).catch((error) => {
+  lastError = POLICY_LOADED ? `初始化失败：${String(error?.message ?? error)}` : POLICY_ERROR;
+  console.error('[page-bridge]', lastError);
+}).finally(() => {
+  bootstrapDone = true;
+  if (enabled && bootstrapSucceeded && POLICY_LOADED) connect();
 });
