@@ -381,7 +381,8 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    `var/bridge-token`，此后**所有 HTTP 与 WS 握手都要出示**它（`Authorization: Bearer <token>`；
    WS 用 `?token=`，因为浏览器无法在 WS 握手里加自定义头）。令牌只经**可信通道**下发给扩展：
    Chrome 拉起的 native 通道（`allowed_origins` 保证只有本扩展能启动宿主），或握手里已出示过令牌的 WS。
-   端口被别人抢占时 native host **失败关闭**：拒绝 relay、打日志、退出，绝不把 Chrome 认证过的通道交出去。
+    端口被别人抢占时 native host 只会通过一次性 challenge-response 建立 relay：不把能力令牌放进 relay URL，
+    也不会接受伪造的 `101` WebSocket 服务端；证明失败就关闭，绝不把 Chrome 认证过的通道交出去。
    `node page.mjs token` 打印令牌；纯 WS 模式需要在弹窗里粘贴一次。
 2. **特权设置只认弹窗**：`setFullAccess` / `setPolicy` / `setEnabled` / `share` / `unshare` /
    `setTransport` / `setWsToken` / `push` 都校验 `sender.url` 是 `popup.html`，不再依赖"目前只有 popup 在调"
@@ -402,7 +403,10 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    （`/cmd` 回包里带 `browser`），防止动作在 Chrome、快照拍到 Edge。
 7. **同一个浏览器多 Profile 可区分**：hello 里带上每个 Profile 的 `instance` id，`/status` 会显示它；
    `page_use_browser` 支持 `chrome@<instance 前缀>` 精确寻址（只写 `chrome` 时仍按 ID 前缀匹配）。
-8. **WS 单帧上限 8 MB**：声称超大长度的帧直接断连，不再无限缓冲（本机 DoS）。
+8. **WS / native 单帧上限 8 MB**：声称超大长度的帧直接断连，不再无限缓冲（本机 DoS）；
+   WebSocket 客户端帧还必须 masked，分片和保留位会被拒绝。
+9. **运行期日志有边界**：`events.jsonl` 默认最多 5 MB，超过后从新文件开始记录；落盘 URL 会移除 query/hash，
+   以免把搜索词或一次性 token 长期写入日志。可用 `--max-log-bytes` 或 `PAGE_BRIDGE_MAX_LOG_BYTES` 调整上限。
 
 **语义边界（写清楚，免得误解）**：域名黑名单约束的是 **agent 的操作**，不是"页面永远不会发出请求"——
 `page_click` 点到链接、页面自己的 form submit 都可能产生导航。要做到后者需要浏览器级网络策略，
@@ -420,15 +424,18 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 | `dev/extension-id-test.mjs` | Chromium 扩展 ID 推导，Chrome/Edge 一致性 |
 | `dev/smoke-snapshot.mjs` / `smoke-mcp.mjs` | MCP 层冒烟（自带桥接 + 假扩展，隔离端口） |
 
-需要真浏览器的两个（`dev/snapshot-probe.mjs` 快照探针、`dev/native-e2e-test.mjs` 端到端）**不在 CI 里**：
-前者要 Chromium，后者依赖 `--load-extension`（官方 Chrome 137+ 与 Edge 154 已移除，会自己 SKIP）。
+本地可以用 `npm run test:browser:fixtures` 一次跑完快照、目标复核和按键测试；它优先使用 DSH 自带的
+`playwright-core`，也接受项目根目录的本地安装。真实 Edge native E2E 可用 `npm run test:browser:native`。
+GitHub Actions 里另有手动触发的 [`.github/workflows/browser-e2e.yml`](.github/workflows/browser-e2e.yml)：
+它在 Windows runner 上安装 Playwright runtime、注册 Edge native host，再运行这组测试；之所以不并入每次 PR，
+是因为不同品牌 Chromium 对 `--load-extension` 的支持差异很大。
 
 ## 隐私边界
 
 - 页面**内容**只在被调用时那一瞬间读取，不后台持续抓取正文；
 - **窄模式下未共享的标签页完全不可见**：只有你点过「共享当前标签页」的那一个能被读/操作；
   打开「完全接管」后范围扩到全部标签页（这是你显式授权的），但黑名单仍生效；
-- 后台只记录**已授权标签页**的事件（标题/URL/时间）到 `var/events.jsonl`，不含正文——
+- 后台只记录**已授权标签页**的事件（标题/URL/时间）到 `var/events.jsonl`，不含正文；落盘 URL 会去掉 query/hash，
   即使开了完全接管也不会默默记录你的浏览轨迹；不想要可删该文件或停用桥接；
 - 全部流量都在 `127.0.0.1`，不出网；桥接只监听环回地址；
 - 扩展对 `chrome://`、Chrome 应用商店等受保护页面无法注入，会明确报错。

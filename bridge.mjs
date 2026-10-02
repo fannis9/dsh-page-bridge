@@ -9,13 +9,14 @@
  *
  * Native mode (`--native`) is how Chrome launches this file as a native messaging host:
  *   * stdout carries length-prefixed frames ONLY (all logs move to stderr),
- *   * if the port is already taken by an on-demand bridge, this process degrades to a
- *     plain relay: native messaging on one side, WebSocket client on the other. That
- *     keeps a single port and a single dispatch path.
+ *   * if the port is already taken by an on-demand bridge, this process establishes an
+ *     authenticated challenge-response relay: native messaging on one side, WebSocket
+ *     client on the other. The native capability token never crosses that relay URL.
  *
  * Endpoints (127.0.0.1 only):
  *   GET  /                 usage text
  *   GET  /status           { connected, clients, lastEvent, ... }
+ *   GET  /relay-challenge  one-time challenge used only by the local native relay
  *   GET  /events?limit=50  recent tab events (only the shared tab, see the extension)
  *   GET  /state            last pushed page summary
  *   POST /cmd              { name, args, waitMs, timeoutMs } → forwards to the extension
@@ -24,14 +25,15 @@
  * No dependencies: WebSocket framing and native messaging framing are implemented here.
  */
 import { createServer, request as httpRequest } from 'node:http';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 /** 单帧上限：超限即视为协议攻击/坏客户端，断连而不是无限缓冲。 */
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const here = dirname(fileURLToPath(import.meta.url));
 
 const argv = process.argv.slice(2);
@@ -45,6 +47,7 @@ const NATIVE = Boolean(flag('native', false));
 const PORT = Number(flag('port', process.env.PAGE_BRIDGE_PORT ?? 8799));
 const HOST = '127.0.0.1';
 const LOG_FILE = flag('log', join(here, 'var', 'events.jsonl'));
+const MAX_LOG_BYTES = Math.max(64 * 1024, Number(flag('max-log-bytes', process.env.PAGE_BRIDGE_MAX_LOG_BYTES ?? 5 * 1024 * 1024)) || 5 * 1024 * 1024);
 /**
  * 本地控制面的能力令牌（capability token）。
  *
@@ -81,6 +84,8 @@ const tokenMatches = (req, url) => tokenFromRequest(req, url) === TOKEN;
 const AUTH_HINT = 'unauthorized：本地控制面需要能力令牌（Authorization: Bearer <token>；WS 用 ?token=）。'
   + '令牌文件由桥接自动生成，也可用 node page.mjs token 查看。';
 const MAX_EVENTS = 500;
+const RELAY_CHALLENGE_TTL_MS = 5_000;
+const MAX_RELAY_CHALLENGES = 128;
 /** Exit after this many minutes without any traffic (0 = never). On-demand startup. */
 const IDLE_EXIT_MINUTES = NATIVE ? 0 : Number(flag('idle-exit', process.env.PAGE_BRIDGE_IDLE_MINUTES ?? 30));
 
@@ -103,6 +108,46 @@ const pending = new Map();
 const events = [];
 let lastState = null;
 let lastEvent = null;
+const relayChallenges = new Map();
+
+function hmacHex(label, nonce) {
+  return createHmac('sha256', TOKEN).update(`${label}:${nonce}`).digest('hex');
+}
+
+function safeHexEqual(left, right) {
+  if (typeof left !== 'string' || typeof right !== 'string') return false;
+  const a = Buffer.from(left, 'hex');
+  const b = Buffer.from(right, 'hex');
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+function issueRelayChallenge() {
+  const now = Date.now();
+  for (const [nonce, expiresAt] of relayChallenges) {
+    if (expiresAt <= now) relayChallenges.delete(nonce);
+  }
+  while (relayChallenges.size >= MAX_RELAY_CHALLENGES) relayChallenges.delete(relayChallenges.keys().next().value);
+  const nonce = randomBytes(32).toString('hex');
+  relayChallenges.set(nonce, now + RELAY_CHALLENGE_TTL_MS);
+  return nonce;
+}
+
+function consumeRelayChallenge(nonce, proof) {
+  const expiresAt = relayChallenges.get(nonce);
+  relayChallenges.delete(nonce);
+  return Boolean(expiresAt && expiresAt > Date.now() && safeHexEqual(proof, hmacHex('relay-client', nonce)));
+}
+
+function redactUrl(value) {
+  try {
+    const url = new URL(String(value));
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return String(value ?? '');
+  }
+}
 
 /* ------------------------------------------------------------- persistence */
 
@@ -113,7 +158,15 @@ function remember(entry) {
   if (entry.name === 'page-pushed' && entry.state) lastState = entry.state;
   try {
     mkdirSync(dirname(LOG_FILE), { recursive: true });
-    appendFileSync(LOG_FILE, `${JSON.stringify(entry)}\n`);
+    // Keep the in-memory API lossless, but avoid retaining query strings/fragments
+    // (which commonly contain search terms or one-time tokens) in the persistent log.
+    const logged = { ...entry };
+    if (logged.tab?.url) logged.tab = { ...logged.tab, url: redactUrl(logged.tab.url) };
+    if (logged.state?.url) logged.state = { ...logged.state, url: redactUrl(logged.state.url) };
+    const line = `${JSON.stringify(logged)}\n`;
+    const currentSize = statSync(LOG_FILE, { throwIfNoEntry: false })?.size ?? 0;
+    if (currentSize + Buffer.byteLength(line) > MAX_LOG_BYTES) writeFileSync(LOG_FILE, line);
+    else appendFileSync(LOG_FILE, line);
   } catch { /* logging must never break the bridge */ }
 }
 
@@ -146,9 +199,12 @@ function encodeMaskedText(text) {
   let header;
   if (payload.length < 126) {
     header = Buffer.from([0x81, 0x80 | payload.length]);
-  } else {
+  } else if (payload.length < 65536) {
     header = Buffer.alloc(4);
     header[0] = 0x81; header[1] = 0x80 | 126; header.writeUInt16BE(payload.length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81; header[1] = 0x80 | 127; header.writeBigUInt64BE(BigInt(payload.length), 2);
   }
   return Buffer.concat([header, mask, masked]);
 }
@@ -157,13 +213,14 @@ function encodeControl(opcode) {
   return Buffer.from([0x80 | opcode, 0]);
 }
 
-function decodeFrames(state, chunk) {
+function decodeFrames(state, chunk, { requireMask = false } = {}) {
   state.buffer = Buffer.concat([state.buffer, chunk]);
   const messages = [];
   for (;;) {
     const buf = state.buffer;
     if (buf.length < 2) break;
     const fin = (buf[0] & 0x80) !== 0;
+    const reserved = buf[0] & 0x70;
     const opcode = buf[0] & 0x0f;
     const masked = (buf[1] & 0x80) !== 0;
     let length = buf[1] & 0x7f;
@@ -175,6 +232,10 @@ function decodeFrames(state, chunk) {
       if (buf.length < 10) break;
       length = Number(buf.readBigUInt64BE(2)); offset = 10;
     }
+    if (reserved !== 0) throw new Error('websocket reserved bits are not supported');
+    if (requireMask && !masked) throw new Error('client websocket frame is not masked');
+    if (!fin) throw new Error('fragmented websocket frames are not supported');
+    if (opcode >= 0x8 && length > 125) throw new Error('invalid websocket control frame');
     // 没有上限时，一个声称 2^60 字节的帧会让缓冲区无限增长（本机 DoS）。超限直接抛，调用方断连。
     if (length > MAX_FRAME_BYTES) throw new Error(`websocket frame too large: ${length} > ${MAX_FRAME_BYTES}`);
     let mask = null;
@@ -208,6 +269,11 @@ function createNativeReader(stream, onMessage) {
     for (;;) {
       if (state.buffer.length < 4) return;
       const length = state.buffer.readUInt32LE(0);
+      if (length > MAX_FRAME_BYTES) {
+        log(`native frame too large: ${length} > ${MAX_FRAME_BYTES}`);
+        stream.destroy();
+        return;
+      }
       if (state.buffer.length < 4 + length) return;
       const payload = state.buffer.subarray(4, 4 + length);
       state.buffer = state.buffer.subarray(4 + length);
@@ -244,7 +310,7 @@ function broadcast(data) {
  */
 function extensionClient(browser) {
   const list = [...clients].filter((c) => c.label === 'chrome-extension');
-  if (list.length === 0) return [...clients].at(-1) ?? null;
+  if (list.length === 0) return null;
   if (browser) {
     // 支持 chrome@<instance 前缀>：同一个浏览器开多个 Profile 时，两个实例都会报 browser=chrome，
     // 只写 chrome 就指不定是谁（外部评审的第 9 条）。
@@ -263,6 +329,12 @@ const browsersOf = (list = [...clients]) => list.filter((c) => c.label === 'chro
 
 function dropClient(client, reason = '') {
   if (!clients.delete(client)) return;
+  for (const [id, entry] of pending) {
+    if (entry.client !== client) continue;
+    pending.delete(id);
+    clearTimeout(entry.timer);
+    entry.reject(new Error(`浏览器连接已断开${reason ? `：${reason}` : ''}`));
+  }
   log(`client disconnected (${clients.size} left)${reason ? ` — ${reason}` : ''}`);
   try { client.close(); } catch { /* ignore */ }
 }
@@ -281,7 +353,7 @@ function handleMessage(client, msg) {
     if (msg.instance) client.instance = String(msg.instance);
     // A relay carries the extension's own hello over its WebSocket uplink, so record the
     // browser-side transport too: /status should say "native" even in relay mode.
-    if (msg.via === 'native' && client.via === 'ws') client.via = 'native-relay';
+    if (msg.via === 'native' && (client.via === 'ws' || client.via === 'relay')) client.via = 'native-relay';
     log(`hello from ${client.label}${client.browser ? ` (${client.browser}${client.instance ? `@${client.instance.slice(0, 8)}` : ''})` : ''} via ${client.via} v${msg.version ?? '?'}`);
     // 令牌只发给"身份可信"的通道：直接由 Chrome 拉起的 native 通道，或握手时出示过令牌的 WS。
     // 攻击者即使抢占端口/连上 WS，也拿不到它，因此无法把扩展骗到自己的通道上。
@@ -304,15 +376,24 @@ function handleMessage(client, msg) {
   }
 }
 
-function dispatch(name, args, { waitMs = 8000, timeoutMs = 20000, browser = null } = {}) {
+function clientKey(client) {
+  if (!client) return null;
+  return `${client.browser ?? 'unknown'}@${client.instance ?? client.connectedAt}`;
+}
+
+function findClient(key) {
+  return [...clients].find((client) => client.label === 'chrome-extension' && clientKey(client) === key) ?? null;
+}
+
+function dispatch(name, args, { waitMs = 8000, timeoutMs = 20000, browser = null, targetKey = null } = {}) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const attempt = () => {
-      const client = extensionClient(browser);
+      const client = targetKey ? findClient(targetKey) : extensionClient(browser);
       if (!client) {
-        if (browser && Date.now() - started < 1000) { setTimeout(attempt, 200); return; }
-        if (browser) {
-          reject(new Error(`指定的浏览器 ${browser} 当前没有连接扩展（已连接：${browsersOf().join(', ') || '无'}）`));
+        if ((browser || targetKey) && Date.now() - started < 1000) { setTimeout(attempt, 200); return; }
+        if (browser || targetKey) {
+          reject(new Error(`指定的浏览器 ${browser ?? targetKey} 当前没有连接扩展（已连接：${browsersOf().join(', ') || '无'}）`));
           return;
         }
         if (Date.now() - started >= waitMs) {
@@ -331,6 +412,7 @@ function dispatch(name, args, { waitMs = 8000, timeoutMs = 20000, browser = null
         reject(new Error(`命令 ${name} 超时（${timeoutMs}ms）`));
       }, timeoutMs);
       pending.set(id, {
+        client,
         resolve: (value) => resolve({ result: value, browser: served, via: client.via }),
         reject,
         timer,
@@ -351,7 +433,13 @@ const queues = new Map();
 function enqueue(key, task) {
   const previous = queues.get(key) ?? Promise.resolve();
   const run = previous.then(task, task);
-  queues.set(key, run.then(() => {}, () => {}));
+  let tail;
+  tail = run.then(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  }, () => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  queues.set(key, tail);
   return run;
 }
 
@@ -365,14 +453,33 @@ const json = (res, code, body) => {
 
 const readBody = (req) => new Promise((resolve, reject) => {
   let raw = '';
-  req.on('data', (chunk) => { raw += chunk; if (raw.length > 2_000_000) req.destroy(); });
-  req.on('end', () => { try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); } });
+  let bytes = 0;
+  let tooLarge = false;
+  req.on('data', (chunk) => {
+    if (tooLarge) return;
+    bytes += Buffer.byteLength(chunk);
+    if (bytes > MAX_BODY_BYTES) {
+      tooLarge = true;
+      reject(new Error(`request body too large: ${bytes} > ${MAX_BODY_BYTES}`));
+      req.destroy();
+      return;
+    }
+    raw += chunk;
+  });
+  req.on('end', () => {
+    if (tooLarge) return;
+    try { resolve(raw ? JSON.parse(raw) : {}); } catch (e) { reject(e); }
+  });
   req.on('error', reject);
 });
 
 const server = createServer(async (req, res) => {
-  touch();
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${HOST}:${PORT}`}`);
+
+  if (url.pathname === '/relay-challenge' && req.method === 'GET') {
+    json(res, 200, { nonce: issueRelayChallenge(), expiresMs: RELAY_CHALLENGE_TTL_MS });
+    return;
+  }
 
   // 认证先于一切：回环端口对本机所有进程可见，没有令牌就什么都不给。
   if (!tokenMatches(req, url)) {
@@ -380,6 +487,8 @@ const server = createServer(async (req, res) => {
     json(res, 401, { ok: false, error: AUTH_HINT });
     return;
   }
+
+  touch();
 
   if (url.pathname === '/shutdown' && req.method === 'POST') {
     json(res, 200, { ok: true, stopping: true });
@@ -414,7 +523,8 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/events') {
-    const limit = Number(url.searchParams.get('limit') ?? 50);
+    const requested = Number(url.searchParams.get('limit') ?? 50);
+    const limit = Number.isFinite(requested) ? Math.max(1, Math.min(MAX_EVENTS, Math.trunc(requested))) : 50;
     json(res, 200, { total: events.length, events: events.slice(-limit) });
     return;
   }
@@ -429,12 +539,14 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body?.name) { json(res, 400, { ok: false, error: 'missing name' }); return; }
       // 队列键 = (浏览器, 标签页)：同一个目标上的命令串行，不同目标并行。
-      const effective = body.browser ?? extensionClient(null)?.browser ?? null;
-      const key = `${effective ?? 'auto'}#${body.args?.tabId ?? '*'}`;
+      const selected = extensionClient(body.browser ?? null);
+      const targetKey = clientKey(selected);
+      const key = `${targetKey ?? `browser:${body.browser ?? 'auto'}`}#${body.args?.tabId ?? '*'}`;
       const served = await enqueue(key, () => dispatch(body.name, body.args ?? {}, {
-        waitMs: Number(body.waitMs ?? 8000),
-        timeoutMs: Number(body.timeoutMs ?? 20000),
+        waitMs: Math.max(0, Math.min(60_000, Number(body.waitMs ?? 8000) || 0)),
+        timeoutMs: Math.max(100, Math.min(120_000, Number(body.timeoutMs ?? 20_000) || 20_000)),
         browser: body.browser ?? null,
+        targetKey,
       }));
       json(res, 200, { ok: true, result: served.result, browser: served.browser, via: served.via });
     } catch (error) {
@@ -464,7 +576,10 @@ server.on('upgrade', (req, socket) => {
     socket.destroy();
     return;
   }
-  if (!tokenMatches(req, url)) {
+  const relayNonce = String(req.headers['x-bridge-relay-nonce'] ?? '');
+  const relayProof = String(req.headers['x-bridge-relay-proof'] ?? '');
+  const relay = relayNonce && relayProof && consumeRelayChallenge(relayNonce, relayProof);
+  if (!relay && !tokenMatches(req, url)) {
     log('ws handshake rejected (bad or missing token)');
     try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* ignore */ }
     socket.destroy();
@@ -481,8 +596,8 @@ server.on('upgrade', (req, socket) => {
   const state = { buffer: Buffer.alloc(0) };
   const client = {
     label: 'unknown',
-    via: 'ws',
-    trusted: true,   // 走到这里说明 WS 握手出示过能力令牌
+    via: relay ? 'relay' : 'ws',
+    trusted: true,   // 走到这里说明 WS 握手出示过能力令牌，或 relay challenge 已通过
     connectedAt: Date.now(),
     send: (data) => { socket.write(encodeText(JSON.stringify(data))); },
     close: () => {
@@ -492,11 +607,16 @@ server.on('upgrade', (req, socket) => {
   };
   clients.add(client);
   log(`ws client connected (${clients.size} total)`);
+  if (relay) socket.write(encodeText(JSON.stringify({
+    type: 'relay-auth-ok',
+    nonce: relayNonce,
+    proof: hmacHex('relay-server', relayNonce),
+  })));
 
   socket.on('data', (chunk) => {
     touch();
     let messages;
-    try { messages = decodeFrames(state, chunk); } catch { dropClient(client, 'bad frame'); return; }
+    try { messages = decodeFrames(state, chunk, { requireMask: true }); } catch { dropClient(client, 'bad frame'); return; }
     for (const frame of messages) {
       if (frame.opcode === 0x8) { dropClient(client, 'closed by peer'); return; }
       if (frame.opcode === 0x9) { try { socket.write(encodeControl(0xA)); } catch { /* ignore */ } continue; }
@@ -548,47 +668,113 @@ function startNativeClient() {
 /** Relay mode: another bridge already owns the port, so forward frames to it instead. */
 function startRelay() {
   const key = randomBytes(16).toString('base64');
-  const handshake = httpRequest({
-    host: HOST,
-    port: PORT,
-    path: `/ws?token=${encodeURIComponent(TOKEN)}`,
-    headers: {
-      connection: 'Upgrade',
-      upgrade: 'websocket',
-      'sec-websocket-key': key,
-      'sec-websocket-version': '13',
-    },
-  });
-
-  handshake.on('upgrade', (res, socket) => {
-    log(`relaying native messaging ⇄ ws://${HOST}:${PORT}/ws (port already in use)`);
-    const state = { buffer: Buffer.alloc(0) };
-    const toBridge = (data) => { try { socket.write(encodeMaskedText(JSON.stringify(data))); } catch { /* ignore */ } };
-
-    createNativeReader(process.stdin, toBridge);
-    socket.on('data', (chunk) => {
-      for (const frame of decodeFrames(state, chunk)) {
-        if (frame.opcode !== 0x1) continue;
-        try { writeNativeFrame(JSON.parse(frame.payload.toString('utf8'))); } catch { /* ignore */ }
+  const challengeRequest = httpRequest({ host: HOST, port: PORT, path: '/relay-challenge' });
+  challengeRequest.on('response', (res) => {
+    let raw = '';
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => { raw += chunk; });
+    res.on('end', () => {
+      if (res.statusCode !== 200) {
+        log(`relay challenge refused by the port owner (HTTP ${res.statusCode})`);
+        process.exit(1);
+        return;
+      }
+      try {
+        const nonce = JSON.parse(raw).nonce;
+        if (!/^[0-9a-f]{64}$/.test(nonce)) throw new Error('invalid relay nonce');
+        connectRelay(nonce);
+      } catch (error) {
+        log(`relay challenge invalid: ${error.message}`);
+        process.exit(1);
       }
     });
-    const stop = (why) => { log(`relay stopped (${why})`); process.exit(0); };
-    process.stdin.on('end', () => stop('stdin end'));
-    process.stdin.on('close', () => stop('stdin close'));
-    socket.on('close', () => stop('bridge closed'));
-    socket.on('error', () => stop('socket error'));
-    process.stdin.resume();
   });
-  handshake.on('response', (res) => {
-    // 端口被别人占着，而且对方拿不出令牌 —— 绝不把 native 通道交给它。
-    log(`relay refused by the port owner (HTTP ${res.statusCode}); native messaging stays on Chrome's authenticated channel only`);
+  challengeRequest.on('error', (error) => {
+    log(`relay challenge failed: ${error.message}`);
     process.exit(1);
   });
-  handshake.on('error', (error) => {
-    log(`relay handshake failed: ${error.message}`);
-    process.exit(1);
-  });
-  handshake.end();
+  challengeRequest.end();
+
+  const connectRelay = (nonce) => {
+    const handshake = httpRequest({
+      host: HOST,
+      port: PORT,
+      path: '/ws',
+      headers: {
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-key': key,
+        'sec-websocket-version': '13',
+        'x-bridge-relay-nonce': nonce,
+        'x-bridge-relay-proof': hmacHex('relay-client', nonce),
+      },
+    });
+
+    handshake.on('upgrade', (res, socket, head) => {
+      const accept = res.headers['sec-websocket-accept'];
+      if (res.statusCode !== 101 || accept !== acceptKey(key)) {
+        log('relay refused: invalid websocket handshake');
+        socket.destroy();
+        process.exit(1);
+        return;
+      }
+      log(`relaying native messaging ⇄ ws://${HOST}:${PORT}/ws (authenticated relay)`);
+      const state = { buffer: Buffer.alloc(0) };
+      let authenticated = false;
+      let stopped = false;
+      const stop = (why) => {
+        if (stopped) return;
+        stopped = true;
+        log(`relay stopped (${why})`);
+        process.exit(0);
+      };
+      const fail = (why) => {
+        if (stopped) return;
+        stopped = true;
+        log(`relay authentication failed (${why})`);
+        try { socket.destroy(); } catch { /* ignore */ }
+        process.exit(1);
+      };
+      const toBridge = (data) => { try { socket.write(encodeMaskedText(JSON.stringify(data))); } catch { /* ignore */ } };
+      const onData = (chunk) => {
+        let frames;
+        try { frames = decodeFrames(state, chunk); } catch { fail('bad frame'); return; }
+        for (const frame of frames) {
+          if (frame.opcode !== 0x1) continue;
+          let msg;
+          try { msg = JSON.parse(frame.payload.toString('utf8')); } catch { fail('invalid json'); return; }
+          if (!authenticated) {
+            if (msg.type !== 'relay-auth-ok' || msg.nonce !== nonce
+              || !safeHexEqual(msg.proof, hmacHex('relay-server', nonce))) {
+              fail('bad server proof');
+              return;
+            }
+            authenticated = true;
+            createNativeReader(process.stdin, toBridge);
+            process.stdin.on('end', () => stop('stdin end'));
+            process.stdin.on('close', () => stop('stdin close'));
+            process.stdin.resume();
+            continue;
+          }
+          writeNativeFrame(msg);
+        }
+      };
+      socket.on('data', onData);
+      if (head?.length) onData(head);
+      socket.on('close', () => stop('bridge closed'));
+      socket.on('error', () => stop('socket error'));
+    });
+    handshake.on('response', (res) => {
+      res.resume();
+      log(`relay refused by the port owner (HTTP ${res.statusCode})`);
+      process.exit(1);
+    });
+    handshake.on('error', (error) => {
+      log(`relay handshake failed: ${error.message}`);
+      process.exit(1);
+    });
+    handshake.end();
+  };
 }
 
 server.on('error', (error) => {

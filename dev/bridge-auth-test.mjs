@@ -17,7 +17,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -149,8 +149,55 @@ const exitCode = await new Promise((resolve) => {
 });
 squatter.close();
 check('对方拿不出令牌时 native host 退出（不 relay）', exitCode !== 0 && exitCode !== 'timeout', `exitCode=${exitCode} log=${nativeErr.slice(0, 300)}`);
-check('日志说明了拒绝原因', /refused|401|unauthenticated/i.test(nativeErr), nativeErr.slice(0, 300));
+check('日志说明了拒绝原因', /refused|401|unauthenticated|invalid relay nonce/i.test(nativeErr), nativeErr.slice(0, 300));
 check('没有把 hello 转发给占端口的人', !nativeOut.includes('hello-ack'), nativeOut.slice(0, 200));
+
+console.log('\n=== 6. 恶意端口占用者即使返回 101 也不能接管 relay ===');
+await new Promise((resolve) => squatter.close(resolve));
+const attackerNonce = 'a'.repeat(64);
+let attackerUpgradePath = '';
+let attackerSawHello = false;
+const attackerSockets = new Set();
+const attacker = createServer((req, res) => {
+  if (req.url === '/relay-challenge') {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ nonce: attackerNonce }));
+    return;
+  }
+  res.writeHead(404).end();
+});
+attacker.on('upgrade', (req, socket) => {
+  attackerSockets.add(socket);
+  socket.on('close', () => attackerSockets.delete(socket));
+  attackerUpgradePath = String(req.url ?? '');
+  const wsKey = String(req.headers['sec-websocket-key'] ?? '');
+  const accept = createHash('sha1').update(`${wsKey}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write([
+    'HTTP/1.1 101 Switching Protocols',
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Accept: ${accept}`,
+    '', '',
+  ].join('\r\n'));
+  const fake = Buffer.from(JSON.stringify({ type: 'relay-auth-ok', nonce: attackerNonce, proof: '0'.repeat(64) }));
+  socket.write(Buffer.concat([Buffer.from([0x81, fake.length]), fake]));
+  socket.on('data', (chunk) => { if (chunk.includes(Buffer.from('hello'))) attackerSawHello = true; });
+});
+await new Promise((resolve) => attacker.listen(PORT + 1, '127.0.0.1', resolve));
+const hostileNative = spawn(NODE, [BRIDGE, '--native', '--port', String(PORT + 1), '--token-file', join(workDir, 'other-token-2')], {
+  stdio: ['pipe', 'pipe', 'pipe'],
+});
+let hostileOut = '';
+hostileNative.stdout.on('data', (d) => { hostileOut += d; });
+hostileNative.stdin.write(Buffer.concat([frame, hello]));
+const hostileExit = await new Promise((resolve) => {
+  const timer = setTimeout(() => resolve('timeout'), 6000);
+  hostileNative.on('exit', (code) => { clearTimeout(timer); resolve(code); });
+});
+check('恶意 101 relay 最终失败关闭', hostileExit !== 0 && hostileExit !== 'timeout', `exitCode=${hostileExit}`);
+check('relay URL 不泄露能力令牌', !attackerUpgradePath.includes(token), attackerUpgradePath);
+check('伪造服务端证明不会收到 native hello', !attackerSawHello && !hostileOut.includes('hello-ack'), hostileOut.slice(0, 200));
+for (const socket of attackerSockets) socket.destroy();
+await new Promise((resolve) => attacker.close(resolve));
 
 console.log('\n=== 桥接日志（末 400 字符）===');
 console.log(bridgeLog.slice(-400));

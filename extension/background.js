@@ -38,6 +38,11 @@ let fullAccess = false;
 let sharedGrant = null;
 let badgeText = '';
 
+// Keep the policy implementation independent from the service-worker plumbing so it can
+// be reviewed and unit-tested without evaluating this whole file.
+if (typeof importScripts === 'function') importScripts('policy.js');
+const POLICY = globalThis.DSH_POLICY;
+
 /** Toolbar badge: '' disabled · '·' idle · '···' waiting · 'ON' shared · 'ALL' full access. */
 function paintBadge() {
   const text = !enabled ? ''
@@ -49,60 +54,6 @@ function paintBadge() {
     if (text) chrome.action.setBadgeBackgroundColor({ color: text === 'ALL' ? '#d14343' : text === 'ON' ? '#12a150' : '#d97706' });
   } catch { /* ignore */ }
 }
-
-// #region grant-policy
-/**
- * Pure policy helpers — deliberately dependency-free so dev/grant-policy-test.mjs can
- * unit-test them in plain Node (same trick as the aria-snapshot region).
- *
- * Borrowed concepts: BrowserMCP's per-tab "Connect" (a tab must be explicitly shared,
- * one at a time) and mcp-chrome's permission-based access control (domain rules).
- */
-const POLICY = (() => {
-  const normalizePattern = (raw) => String(raw ?? '')
-    .trim().toLowerCase()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
-    .replace(/[/?#].*$/, '')
-    .replace(/^\./, '')
-    .replace(/\.$/, '');
-  const hostOf = (url) => { try { return new URL(url).hostname.toLowerCase(); } catch { return ''; } };
-  const originOf = (url) => { try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; } };
-  /** `example.com` matches itself and subdomains; `*.example.com` matches subdomains only. */
-  const matches = (host, pattern) => {
-    const p = normalizePattern(pattern);
-    if (!p || !host) return false;
-    if (p.startsWith('*.')) {
-      const base = p.slice(2);
-      return host === base || host.endsWith(`.${base}`);
-    }
-    return host === p || host.endsWith(`.${p}`);
-  };
-  /**
-   * Decide whether a URL may be read/operated.
-   * An empty allowlist means "everything except the blocklist"; a non-empty allowlist
-   * turns the mode into default-deny.
-   */
-  const isDomainAllowed = (url, allow = [], block = []) => {
-    const host = hostOf(url);
-    if (!host) return true;
-    if (block.some((p) => matches(host, p))) return false;
-    if (allow.length === 0) return true;
-    return allow.some((p) => matches(host, p));
-  };
-  /** Non-web schemes cannot be injected into; callers report them as protected pages. */
-  const isProtected = (url) => !/^https?:/i.test(String(url ?? ''));
-  const sanitizeList = (value) => {
-    const raw = Array.isArray(value) ? value : String(value ?? '').split(/[\n,;]+/);
-    const out = [];
-    for (const item of raw) {
-      const p = normalizePattern(item);
-      if (p && !out.includes(p)) out.push(p);
-    }
-    return out;
-  };
-  return { normalizePattern, hostOf, originOf, matches, isDomainAllowed, isProtected, sanitizeList };
-})();
-// #endregion grant-policy
 
 const NO_GRANT_MESSAGE = '尚未共享标签页：点浏览器工具栏上的扩展图标 → 「共享当前标签页」，之后我才能读取/操作它';
 const DEFAULT_POLICY = { allowDomains: [], blockDomains: [] };
@@ -1286,9 +1237,16 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
  */
 const POPUP_URL = chrome.runtime.getURL('popup.html');
 const PRIVILEGED_KINDS = new Set(['setFullAccess', 'setPolicy', 'setEnabled', 'share', 'unshare', 'setTransport', 'push', 'setWsToken']);
-const fromPopup = (sender) => Boolean(sender)
-  && sender.id === chrome.runtime.id
-  && String(sender.url ?? '').startsWith(POPUP_URL);
+const POPUP_LOCATION = new URL(POPUP_URL);
+const fromPopup = (sender) => {
+  if (!sender || sender.id !== chrome.runtime.id) return false;
+  try {
+    const location = new URL(String(sender.url ?? ''));
+    return location.origin === POPUP_LOCATION.origin && location.pathname === POPUP_LOCATION.pathname;
+  } catch {
+    return false;
+  }
+};
 
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   if (PRIVILEGED_KINDS.has(msg?.kind) && !fromPopup(sender)) {

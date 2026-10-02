@@ -1,0 +1,21 @@
+{
+  "name": "dsh-page-bridge",
+  "version": "0.6.1",
+  "private": true,
+  "type": "module",
+  "description": "Expose a user's browser tabs to DSH through native messaging, WebSocket, CLI, and MCP.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check bridge.mjs && node --check mcp-server.mjs && node --check page.mjs && node --check register-host.mjs && node --check extension/background.js && node --check extension/policy.js && node --check extension/popup.js && node --check dev/playwright-runtime.mjs",
+    "test:policy": "node dev/grant-policy-test.mjs",
+    "test:auth": "node dev/bridge-auth-test.mjs",
+    "test:queue": "node dev/bridge-queue-test.mjs",
+    "test:native": "node dev/native-framing-test.mjs",
+    "test:mcp": "node smoke-mcp.mjs",
+    "test:browser:fixtures": "node dev/snapshot-probe.mjs && node dev/target-resolve-test.mjs && node dev/key-dispatch-test.mjs",
+    "test:browser:native": "node dev/native-e2e-test.mjs --browser edge"
+  }
+}

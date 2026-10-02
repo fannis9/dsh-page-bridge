@@ -11,16 +11,12 @@
  *   node dev/snapshot-probe.mjs --url https://example.com
  *   node dev/snapshot-probe.mjs --url ... --max-nodes 800 --refs
  */
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { chromium } from './playwright-runtime.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
-const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
-const { chromium } = require('playwright-core');
 
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
@@ -36,7 +32,7 @@ const CHROME = [
   process.env.DSH_BROWSER_EXECUTABLE,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-].find((p) => p && require('node:fs').existsSync(p));
+].find((p) => p && existsSync(p));
 
 const source = readFileSync(join(HERE, '..', 'extension', 'background.js'), 'utf8');
 const grab = (name) => {

@@ -2,7 +2,7 @@
 /**
  * grant-policy-test.mjs — unit-test the extension's permission policy in plain Node.
  *
- * The policy lives in extension/background.js inside the `#region grant-policy` block and
+ * The policy lives in extension/policy.js inside the `#region grant-policy` block and
  * is deliberately dependency-free, so it can be extracted (single source of truth) and
  * tested without a browser. Mirrors dev/snapshot-probe.mjs.
  *
@@ -13,13 +13,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(join(HERE, '..', 'extension', 'background.js'), 'utf8');
+const source = readFileSync(join(HERE, '..', 'extension', 'policy.js'), 'utf8');
 const region = /\/\/ #region grant-policy([\s\S]*?)\/\/ #endregion grant-policy/.exec(source);
 if (!region) {
   console.error('找不到 #region grant-policy 区块');
   process.exit(1);
 }
-const POLICY = new Function(`${region[1]}\nreturn POLICY;`)();
+const POLICY = new Function(`${region[1]}\nreturn DSH_POLICY;`)();
 
 let failures = 0;
 let checks = 0;

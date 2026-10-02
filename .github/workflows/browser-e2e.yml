@@ -1,0 +1,33 @@
+name: browser-e2e
+
+# Real-browser coverage is intentionally separate from the fast browser-free job.
+# It is manual because unpacked-extension flags differ across branded Chromium builds.
+on:
+  workflow_dispatch:
+
+jobs:
+  chromium:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Playwright runtime
+        run: npm install --no-save playwright-core
+
+      - name: Register Edge native host
+        run: node register-host.mjs register --browser edge
+
+      - name: Run browser fixture tests
+        run: npm run test:browser:fixtures
+
+      - name: Run Edge native messaging E2E
+        run: npm run test:browser:native
+
+      - name: Remove Edge native host registration
+        if: always()
+        run: node register-host.mjs unregister --browser edge

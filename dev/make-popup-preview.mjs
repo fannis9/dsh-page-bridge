@@ -9,17 +9,12 @@
  *   node dev/make-popup-preview.mjs
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { chromium } from './playwright-runtime.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
-const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
-const { chromium } = require('playwright-core');
-
 /** 版本号从 manifest 读，避免预览图里印着过期版本 */
 const MANIFEST = JSON.parse(readFileSync(join(ROOT, 'extension', 'manifest.json'), 'utf8'));
 

@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const EXTENSION_DIR = join(HERE, '..', 'extension');
 const SOURCE = readFileSync(join(HERE, '..', 'extension', 'background.js'), 'utf8');
 
 let failures = 0;
@@ -160,6 +161,12 @@ async function loadWorker({ userAgent = CHROME_UA } = {}) {
     Array, Object, RegExp, Set, Map, Buffer, structuredClone,
   });
   context.globalThis = context;
+  context.importScripts = (...paths) => {
+    for (const path of paths) {
+      const source = readFileSync(join(EXTENSION_DIR, path), 'utf8');
+      vm.runInContext(source, context, { filename: path });
+    }
+  };
   let loadError = null;
   try {
     vm.runInContext(SOURCE, context, { filename: 'background.js' });

@@ -19,19 +19,13 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { chromium } from './playwright-runtime.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = join(HERE, '..');
 const EXTENSION = join(PROJECT, 'extension');
-/** playwright-core 从 DSH profile 的 node_modules 里取；可用 DSH_PROFILE_DIR 覆盖 */
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
-const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
-const { chromium } = require('playwright-core');
-
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
