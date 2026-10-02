@@ -73,6 +73,27 @@ Chrome 会休眠 MV3 扩展的 service worker，而桥接/DSH 端**无法主动�
 
 之后扩展会自己保持连接（20 秒心跳 + 每分钟重连兜底，重连间隔上限 5 秒；切换/加载标签页也会唤醒它）。
 
+## 懒人装法：让你自己的 agent 帮你装
+
+不想照着上面一步步来？**把下面这段话发给你正在用的 agent**（DSH、Claude Code、Cursor 等任何一个都行），
+它会自己把能做的都做完：
+
+> 帮我装一下 Page Bridge：把 https://github.com/fannis9/dsh-page-bridge 克隆到本地任意目录，然后
+> ①在该目录运行 `node register-host.mjs register` 注册 native messaging host（用户级、免管理员）；
+> ②把我的 MCP 客户端配一个 stdio server，命令是 `node <该目录绝对路径>/mcp-server.mjs`，名字用 `page-bridge`；
+> ③跑一遍仓库里的自检脚本（`node dev/grant-policy-test.mjs`、`node dev/sw-load-test.mjs`、
+> `node dev/native-framing-test.mjs`）确认没装坏；④最后告诉我需要我在浏览器里手动点哪几下。
+
+**分工说明**（避免你等一个它做不到的事）：
+
+| 谁做 | 内容 |
+|---|---|
+| 🤖 agent 能全自动 | 克隆/下载 · 注册 native host（路径与扩展 ID 都是自动推导的，**换目录也不用你改 ID**）· 写 MCP 客户端配置 · 跑自检 · 撤销（`register-host.mjs unregister`） |
+| 👤 只能你点 | ① `chrome://extensions`（Edge 是 `edge://extensions`）→ 开发者模式 → **加载已解压的扩展程序** → 选 `extension/` 目录 ← **受保护页面，任何浏览器自动化都注入不进去**；② 点扩展图标 → **共享当前标签页** 或 **完全接管浏览器** |
+
+<sub>非 DSH 客户端同理——第 ② 步就是把 `mcp-server.mjs` 当成一个标准 stdio MCP server 挂上去；
+`dsh-plugin/` 里那份 profile bundle 是 DSH 专用的现成配置（含 `cordis.patch.yml` 示例，路径留了占位符）。</sub>
+
 需要手动控制桥接时：
 
 ```powershell
