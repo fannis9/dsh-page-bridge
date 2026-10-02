@@ -35,6 +35,9 @@ jobs:
       - name: 本地控制面能力令牌（HTTP/WS 认证 + relay 失败关闭）
         run: node dev/bridge-auth-test.mjs
 
+      - name: 命令队列 / 实例路由 / WS 帧上限
+        run: node dev/bridge-queue-test.mjs
+
       - name: native messaging 帧往返（host 模式 + relay 模式）
         run: node dev/native-framing-test.mjs
 

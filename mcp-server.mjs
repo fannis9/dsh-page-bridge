@@ -94,6 +94,12 @@ async function request(path, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
+/**
+ * 最近一次命令是**哪个浏览器**接的。桥接在 /cmd 回包里带上了它，于是随后的自动快照可以固定到
+ * 同一个浏览器——否则动作在 Chrome 执行、用户在等待期间切到 Edge，快照就会拍到另一台（评审第 10 条）。
+ */
+let lastServedBrowser = null;
+
 /** Forward one command to the extension; wait for it to (re)connect if needed. */
 async function cmd(name, args = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   await ensureBridge();
@@ -115,6 +121,7 @@ async function cmd(name, args = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
       ? `${reason}（Chrome 空闲时扩展 worker 会休眠，最多 30 秒后自动唤醒；点一下扩展图标或切换标签页可立即唤醒）`
       : reason);
   }
+  if (body.browser) lastServedBrowser = body.browser;
   return body.result;
 }
 
@@ -163,11 +170,15 @@ async function snapshotAfter(status, options = {}) {
   const minNodes = Number(options.minNodes ?? 3);
   // Targeting matters when an action created a *background* tab.
   const tabArgs = options.tabId === undefined ? {} : { tabId: options.tabId };
+  // 固定浏览器：优先用"这一单是谁执行的"，其次用会话里 pin 的那个。
+  // 不固定的话，用户在动作与快照之间切窗口，快照就可能拍到另一台浏览器（评审第 10 条）。
+  const browser = options.browser ?? lastServedBrowser ?? pinnedBrowser ?? undefined;
+  const snapArgs = browser ? { ...tabArgs, browser } : tabArgs;
   let snap = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await sleep(attempt === 0 ? settleMs : Math.max(settleMs, 900));
     try {
-      snap = await cmd('snapshot', tabArgs, 30_000);
+      snap = await cmd('snapshot', snapArgs, 30_000);
     } catch (error) {
       if (attempt === 1) return `${status}\n(快照失败：${String(error?.message ?? error)})`;
       snap = null;

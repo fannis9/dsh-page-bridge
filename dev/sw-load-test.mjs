@@ -151,6 +151,8 @@ async function loadWorker({ userAgent = CHROME_UA } = {}) {
     // A service worker always has navigator; the extension uses its UA to tell Chrome from
     // Edge (same directory → same extension ID, so the bridge cannot tell otherwise).
     navigator: { userAgent },
+    // A service worker has WebCrypto; the extension uses it to mint a per-profile instance id.
+    crypto: globalThis.crypto,
     console: { log: () => {}, warn: () => {}, error: () => {} },
     setTimeout, clearTimeout, setInterval, clearInterval,
     WebSocket: FakeWebSocket,
@@ -254,8 +256,13 @@ const sendCmd = async (id, name, args = {}) => {
   // Test 5 killed the original port, so always talk to the newest one the SW holds.
   const live = worker.chrome.ports.at(-1);
   live.emitMessage({ type: 'cmd', id, name, args });
-  await sleep(200);
-  return live.sent.filter((m) => m.type === 'result' && m.id === id).at(-1);
+  // 轮询而不是固定等 200ms：有些动作带 settle 延迟（例如点击后的导航复核要等 250ms）。
+  for (let i = 0; i < 30; i += 1) {
+    await sleep(100);
+    const hit = live.sent.filter((m) => m.type === 'result' && m.id === id).at(-1);
+    if (hit) return hit;
+  }
+  return undefined;
 };
 
 let reply = await say('setFullAccess', { value: true });
@@ -346,6 +353,20 @@ check('窄模式下 ISOLATED eval → 允许（正向对照）', res?.ok === tru
 
 res = await sendCmd('n8', 'state');
 check('被拒之后共享依然有效（没有误伤）', res?.ok === true, JSON.stringify(res));
+
+console.log('\n--- 10c. 动作之后的"事后收权"（click/form 可能让页面自己导航） ---');
+worker.chrome.tabUrl = 'https://github.com/fannis9/dsh-page-bridge';
+await say('share', { tabId: 11 });
+res = await sendCmd('p1', 'click', { selector: '#link' });
+check('同 origin 的点击 → 共享保留', res?.ok === true && res.result?.grantAlive !== false, JSON.stringify(res));
+
+// 模拟"这一点让页面自己导航走了"
+worker.chrome.tabUrl = 'https://evil.example/steal';
+res = await sendCmd('p2', 'click', { selector: '#link' });
+check('点击导致跨 origin → 自动撤销共享', res?.result?.grantAlive === false, JSON.stringify(res));
+check('  结果里说明了原因', /origin|黑名单/.test(res?.result?.note ?? ''), JSON.stringify(res?.result?.note));
+res = await sendCmd('p3', 'state');
+check('  撤销之后读一下都要求重新共享', res?.ok === false && /共享/.test(res.error), JSON.stringify(res));
 
 console.log('\n--- 11. 浏览器识别（Chrome/Edge 同目录同 ID，需要区分） ---');
 check('Chrome UA → chrome', vm.runInContext('BROWSER_NAME', worker.context) === 'chrome',

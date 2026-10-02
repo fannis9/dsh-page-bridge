@@ -16,6 +16,8 @@ const WS_URL = WS_BASE;
  * 宿主，是这里唯一的信任根）；纯 WS 模式下需要用户在弹窗里手动粘贴（node page.mjs token 可打印）。
  */
 let wsToken = '';
+/** 每个 Profile 一个随机实例 id：同一个浏览器开两个 Profile 时，hello 里的 browser 都是 chrome。 */
+let instanceId = '';
 const wsUrl = () => (wsToken ? `${WS_BASE}?token=${encodeURIComponent(wsToken)}` : WS_BASE);
 const HEARTBEAT_MS = 20000;
 
@@ -710,7 +712,7 @@ function PAGE_OP(payload) {
       // 没有 form 时用带 keyCode 的合成回车——很多组件（Primer 等）只认这个
       else pressKey(el, 'Enter');
     }
-    return { ok: true, tag: el.tagName.toLowerCase(), value: el.value ?? value };
+    return { ok: true, tag: el.tagName.toLowerCase(), value: String(el.value ?? value).slice(0, 200), valueLength: String(el.value ?? value).length };
   }
 
   if (k === 'key') {
@@ -841,6 +843,29 @@ function send(payload) {
   return false;
 }
 
+/**
+ * 动作之后的"事后收权"。
+ *
+ * 事前拦截只覆盖我们自己发的 `navigate` / `open`；点链接、提交表单、按回车都可能让页面自己导航。
+ * 所以动作后稍等一下再读一次标签页：跨 origin 或落进黑名单，就撤销共享（复用同一个 enforcement 函数），
+ * 并把当前 URL 一起回给调用方——让模型立刻看到"这一下把页面带走了"。
+ */
+async function withNavigationCheck(tab, result) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const merged = { ...(result ?? {}) };
+  try {
+    const current = await chrome.tabs.get(tab.id);
+    if (current) {
+      if (current.url !== tab.url) merged.url = current.url;
+      await enforceGrantOnNavigation(current);
+      const grant = await readGrant();
+      merged.grantAlive = Boolean(grant);
+      if (!grant && !fullAccess) merged.note = '该动作让页面离开了共享的 origin / 落进黑名单，共享已自动取消';
+    }
+  } catch { /* 标签页可能已被关闭；动作本身仍算成功 */ }
+  return merged;
+}
+
 /** Single place that turns an inbound transport message into work (shared by both). */
 async function onTransportMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
@@ -920,7 +945,7 @@ function connectNative() {
 
   // Say hello immediately: the host only speaks once spoken to, so waiting for a first
   // inbound message here would deadlock both sides until the probe window closes.
-  send({ type: 'hello', agent: 'chrome-extension', browser: BROWSER_NAME, version: chrome.runtime.getManifest().version, via: 'native' });
+  send({ type: 'hello', agent: 'chrome-extension', browser: BROWSER_NAME, instance: instanceId, version: chrome.runtime.getManifest().version, via: 'native' });
 
   // Probe window: a missing/unregistered host disconnects almost immediately.
   setTimeout(() => {
@@ -959,7 +984,7 @@ function connectWs() {
     activeTransport = 'ws';
     console.log('[page-bridge] websocket transport connected', WS_BASE);
     paintBadge();
-    send({ type: 'hello', agent: 'chrome-extension', browser: BROWSER_NAME, version: chrome.runtime.getManifest().version, via: 'ws' });
+    send({ type: 'hello', agent: 'chrome-extension', browser: BROWSER_NAME, instance: instanceId, version: chrome.runtime.getManifest().version, via: 'ws' });
     startHeartbeat();
   });
   socket.addEventListener('message', (event) => {
@@ -1094,13 +1119,13 @@ async function handle(name, args) {
       return inject(tabId, 'eval', { code: args.code, worldName: world }, world);
     }
     case 'click':
-      return inject(tabId, 'click', { selector: args.selector }, args.world);
+      return withNavigationCheck(tab, await inject(tabId, 'click', { selector: args.selector }, args.world));
     case 'key':
-      return inject(tabId, 'key', { selector: args.selector, key: args.key, repeat: args.repeat }, args.world);
+      return withNavigationCheck(tab, await inject(tabId, 'key', { selector: args.selector, key: args.key, repeat: args.repeat }, args.world));
     case 'type':
-      return inject(tabId, 'type', { selector: args.selector, text: args.text, submit: args.submit }, args.world);
+      return withNavigationCheck(tab, await inject(tabId, 'type', { selector: args.selector, text: args.text, submit: args.submit }, args.world));
     case 'select':
-      return inject(tabId, 'select', { selector: args.selector, value: args.value }, args.world);
+      return withNavigationCheck(tab, await inject(tabId, 'select', { selector: args.selector, value: args.value }, args.world));
     case 'scroll':
       return inject(tabId, 'scroll', { selector: args.selector, by: args.by, block: args.block }, args.world);
     case 'highlight':
@@ -1404,13 +1429,17 @@ chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'page-bridge-r
 
 // Bootstrap: the persisted master switch, transport and 完全接管 flag win over defaults.
 void Promise.all([
-  chrome.storage.local.get({ enabled: true, transport: 'auto', fullAccess: false, wsToken: '' }),
+  chrome.storage.local.get({ enabled: true, transport: 'auto', fullAccess: false, wsToken: '', instanceId: '' }),
   readGrant(),
 ]).then(([stored, grant]) => {
   enabled = stored.enabled !== false;
   transport = ['auto', 'native', 'ws'].includes(stored.transport) ? stored.transport : 'auto';
   fullAccess = stored.fullAccess === true;
   wsToken = typeof stored.wsToken === 'string' ? stored.wsToken : '';
+  instanceId = typeof stored.instanceId === 'string' && stored.instanceId
+    ? stored.instanceId
+    : Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+  if (stored.instanceId !== instanceId) void chrome.storage.local.set({ instanceId });
   sharedGrant = grant;
   paintBadge();
   if (enabled) connect();

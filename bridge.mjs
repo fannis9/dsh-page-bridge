@@ -30,6 +30,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+/** 单帧上限：超限即视为协议攻击/坏客户端，断连而不是无限缓冲。 */
+const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const here = dirname(fileURLToPath(import.meta.url));
 
 const argv = process.argv.slice(2);
@@ -173,6 +175,8 @@ function decodeFrames(state, chunk) {
       if (buf.length < 10) break;
       length = Number(buf.readBigUInt64BE(2)); offset = 10;
     }
+    // 没有上限时，一个声称 2^60 字节的帧会让缓冲区无限增长（本机 DoS）。超限直接抛，调用方断连。
+    if (length > MAX_FRAME_BYTES) throw new Error(`websocket frame too large: ${length} > ${MAX_FRAME_BYTES}`);
     let mask = null;
     if (masked) {
       if (buf.length < offset + 4) break;
@@ -242,7 +246,11 @@ function extensionClient(browser) {
   const list = [...clients].filter((c) => c.label === 'chrome-extension');
   if (list.length === 0) return [...clients].at(-1) ?? null;
   if (browser) {
-    return list.find((c) => c.browser === browser) ?? null;
+    // 支持 chrome@<instance 前缀>：同一个浏览器开多个 Profile 时，两个实例都会报 browser=chrome，
+    // 只写 chrome 就指不定是谁（外部评审的第 9 条）。
+    const [name, instance] = String(browser).split('@');
+    return list.find((c) => (c.browser ?? 'unknown') === name
+      && (!instance || String(c.instance ?? '').startsWith(instance))) ?? null;
   }
   if (list.length === 1) return list[0];
   const focused = list.filter((c) => c.focused === true);
@@ -270,10 +278,11 @@ function handleMessage(client, msg) {
   if (msg.type === 'hello') {
     client.label = msg.agent ?? 'unknown';
     if (msg.browser) client.browser = msg.browser;
+    if (msg.instance) client.instance = String(msg.instance);
     // A relay carries the extension's own hello over its WebSocket uplink, so record the
     // browser-side transport too: /status should say "native" even in relay mode.
     if (msg.via === 'native' && client.via === 'ws') client.via = 'native-relay';
-    log(`hello from ${client.label}${client.browser ? ` (${client.browser})` : ''} via ${client.via} v${msg.version ?? '?'}`);
+    log(`hello from ${client.label}${client.browser ? ` (${client.browser}${client.instance ? `@${client.instance.slice(0, 8)}` : ''})` : ''} via ${client.via} v${msg.version ?? '?'}`);
     // 令牌只发给"身份可信"的通道：直接由 Chrome 拉起的 native 通道，或握手时出示过令牌的 WS。
     // 攻击者即使抢占端口/连上 WS，也拿不到它，因此无法把扩展骗到自己的通道上。
     const trusted = client.via === 'native' || client.trusted === true;
@@ -313,16 +322,37 @@ function dispatch(name, args, { waitMs = 8000, timeoutMs = 20000, browser = null
         setTimeout(attempt, 250);
         return;
       }
+      // 记住是谁接的这单：调用方（MCP 层）据此把随后的自动快照固定到同一个浏览器，
+      // 否则动作在 Chrome 执行、用户在等待期间切到 Edge，快照就会拍到另一台（评审第 10 条）。
+      const served = client.browser ?? null;
       const id = randomUUID();
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`命令 ${name} 超时（${timeoutMs}ms）`));
       }, timeoutMs);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, {
+        resolve: (value) => resolve({ result: value, browser: served, via: client.via }),
+        reject,
+        timer,
+      });
       sendTo(client, { type: 'cmd', id, name, args });
     };
     attempt();
   });
+}
+
+/**
+ * 同一个 (浏览器, 标签页) 上的命令串行执行。
+ *
+ * 并发下发时，"点击 A → 输入 B → 快照 → 点击 C" 的执行顺序与模型看到的顺序不再一致，
+ * 而页面本身还在做 React 更新。队列把同一目标的顺序固定下来；不同目标互不阻塞。
+ */
+const queues = new Map();
+function enqueue(key, task) {
+  const previous = queues.get(key) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  queues.set(key, run.then(() => {}, () => {}));
+  return run;
 }
 
 /* --------------------------------------------------------------- http layer */
@@ -370,6 +400,7 @@ const server = createServer(async (req, res) => {
         label: c.label,
         via: c.via,
         browser: c.browser,
+        instance: c.instance ?? null,
         focused: c.focused ?? null,
         since: new Date(c.connectedAt).toISOString(),
         lastSeen: c.lastSeen ? new Date(c.lastSeen).toISOString() : null,
@@ -397,12 +428,15 @@ const server = createServer(async (req, res) => {
     try {
       const body = await readBody(req);
       if (!body?.name) { json(res, 400, { ok: false, error: 'missing name' }); return; }
-      const result = await dispatch(body.name, body.args ?? {}, {
+      // 队列键 = (浏览器, 标签页)：同一个目标上的命令串行，不同目标并行。
+      const effective = body.browser ?? extensionClient(null)?.browser ?? null;
+      const key = `${effective ?? 'auto'}#${body.args?.tabId ?? '*'}`;
+      const served = await enqueue(key, () => dispatch(body.name, body.args ?? {}, {
         waitMs: Number(body.waitMs ?? 8000),
         timeoutMs: Number(body.timeoutMs ?? 20000),
         browser: body.browser ?? null,
-      });
-      json(res, 200, { ok: true, result });
+      }));
+      json(res, 200, { ok: true, result: served.result, browser: served.browser, via: served.via });
     } catch (error) {
       json(res, 503, { ok: false, error: String(error?.message ?? error) });
     }

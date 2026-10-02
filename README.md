@@ -38,6 +38,7 @@
   - `make-popup-preview.mjs` 重新渲染 `docs/popup-preview.png`（假 `chrome` API 喂状态，headless 截图）
   - `key-dispatch-test.mjs` 合成按键测试（真浏览器；验证 keyCode/which 与「回车提交」路径，含反例）
   - `bridge-auth-test.mjs` 能力令牌与 relay 失败关闭（**不需要浏览器，进 CI**）
+  - `bridge-queue-test.mjs` per-tab 队列 / 实例路由 / WS 帧上限（**不需要浏览器，进 CI**）
   - `target-resolve-test.mjs` 执行层目标复核：被隐藏 / 被改写 / 签名被删 / 节点被移除（真浏览器）
   - `native-e2e-test.mjs` 真实浏览器端到端（⚠️ 官方 Chrome 137+ 与 Edge 154 都移除了
     `--load-extension`，会直接 SKIP；需 Chromium / Chrome for Testing）
@@ -393,6 +394,15 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    - `open` 在窄授权下只允许同 origin；
    - **MAIN world 的 `eval` 在窄授权下禁用**（它是任意 JS 能力，`location.href = ...` / `window.open(...)`
      会绕过上面两条）；需要时用 `--world ISOLATED`，或先开「完全接管」。
+5. **动作之后的事后收权**：事前拦截只管得住我们自己发的 `navigate` / `open`；点链接、提交表单、按回车都可能
+   让页面自己导航。所以 `click` / `type` / `key` / `select` 执行后会等一下再读一次标签页——跨 origin 或落进
+   黑名单就**立即撤销共享**，并把当前 URL 一起回给调用方（结果里带 `grantAlive` / `note`）。
+6. **同一个标签页上的命令串行**：桥接按 `(浏览器, 标签页)` 排队，避免"点击 A → 输入 B → 快照 → 点击 C"
+   的执行顺序与模型看到的顺序不一致；不同标签页之间互不阻塞。自动快照会固定到**刚接下那一单的浏览器**
+   （`/cmd` 回包里带 `browser`），防止动作在 Chrome、快照拍到 Edge。
+7. **同一个浏览器多 Profile 可区分**：hello 里带上每个 Profile 的 `instance` id，`/status` 会显示它；
+   `page_use_browser` 支持 `chrome@<instance 前缀>` 精确寻址（只写 `chrome` 时仍按 ID 前缀匹配）。
+8. **WS 单帧上限 8 MB**：声称超大长度的帧直接断连，不再无限缓冲（本机 DoS）。
 
 **语义边界（写清楚，免得误解）**：域名黑名单约束的是 **agent 的操作**，不是"页面永远不会发出请求"——
 `page_click` 点到链接、页面自己的 form submit 都可能产生导航。要做到后者需要浏览器级网络策略，

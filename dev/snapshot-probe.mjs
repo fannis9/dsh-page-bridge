@@ -39,12 +39,16 @@ const CHROME = [
 ].find((p) => p && require('node:fs').existsSync(p));
 
 const source = readFileSync(join(HERE, '..', 'extension', 'background.js'), 'utf8');
-const region = /\/\/ #region aria-snapshot([\s\S]*?)\/\/ #endregion aria-snapshot/.exec(source);
-if (!region) {
-  console.error('在后端脚本里找不到 #region aria-snapshot 区块');
-  process.exit(1);
-}
-const builder = region[1];
+const grab = (name) => {
+  const hit = new RegExp(`// #region ${name}([\\s\\S]*?)// #endregion ${name}`).exec(source);
+  if (!hit) {
+    console.error(`在后端脚本里找不到 #region ${name} 区块`);
+    process.exit(1);
+  }
+  return hit[1];
+};
+// 快照区块会调用 targetSignature（给 ref 盖签名），所以执行环境里也要有 target-resolve 区块。
+const builder = `${grab('aria-snapshot')}\n${grab('target-resolve')}`;
 
 const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>快照夹具</title></head>
 <body>
