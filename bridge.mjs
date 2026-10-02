@@ -479,11 +479,6 @@ const readBody = (req) => new Promise((resolve, reject) => {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${HOST}:${PORT}`}`);
 
-  if (url.pathname === '/relay-challenge' && req.method === 'GET') {
-    json(res, 200, { nonce: issueRelayChallenge(), expiresMs: RELAY_CHALLENGE_TTL_MS });
-    return;
-  }
-
   // 认证先于一切：回环端口对本机所有进程可见，没有令牌就什么都不给。
   if (!tokenMatches(req, url)) {
     log(`http ${req.method} ${url.pathname} rejected (bad or missing token)`);
@@ -492,6 +487,13 @@ const server = createServer(async (req, res) => {
   }
 
   touch();
+
+  if (url.pathname === '/relay-challenge' && req.method === 'GET') {
+    // Challenge issuance is part of the authenticated relay handshake.  Keeping it
+    // behind the same guard prevents local nonce-flood eviction of a real relay.
+    json(res, 200, { nonce: issueRelayChallenge(), expiresMs: RELAY_CHALLENGE_TTL_MS });
+    return;
+  }
 
   if (url.pathname === '/shutdown' && req.method === 'POST') {
     json(res, 200, { ok: true, stopping: true });
@@ -674,7 +676,12 @@ function startNativeClient() {
 /** Relay mode: another bridge already owns the port, so forward frames to it instead. */
 function startRelay() {
   const key = randomBytes(16).toString('base64');
-  const challengeRequest = httpRequest({ host: HOST, port: PORT, path: '/relay-challenge' });
+  const challengeRequest = httpRequest({
+    host: HOST,
+    port: PORT,
+    path: '/relay-challenge',
+    headers: { authorization: `Bearer ${TOKEN}` },
+  });
   challengeRequest.on('response', (res) => {
     let raw = '';
     res.setEncoding('utf8');

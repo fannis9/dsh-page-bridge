@@ -12,12 +12,12 @@
  *   node dev/bridge-auth-test.mjs
  */
 import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
@@ -123,7 +123,68 @@ check('WS 无令牌 → 被拒（401 或连接被断）', wsNoToken.outcome !== 
 const wsBadToken = await wsProbe('?token=deadbeef');
 check('WS 错令牌 → 被拒', wsBadToken.outcome !== 'timeout' && (wsBadToken.status === 401 || wsBadToken.outcome === 'error'), JSON.stringify(wsBadToken));
 
-console.log('\n=== 5. 端口被陌生人占用时：native host 必须失败关闭（这是最关键的一条） ===');
+console.log('\n=== 5. relay challenge 本身也必须认证，且抗 nonce 刷写 ===');
+const challengeNoToken = await get('/relay-challenge');
+check('relay challenge 无令牌 → 401', challengeNoToken.status === 401, JSON.stringify(challengeNoToken));
+const challengeWithToken = await get('/relay-challenge', token);
+const relayNonce = challengeWithToken.body?.nonce;
+check('relay challenge 带令牌 → 返回合法 nonce', challengeWithToken.status === 200 && /^[0-9a-f]{64}$/.test(relayNonce ?? ''), JSON.stringify(challengeWithToken));
+const flood = await Promise.all(Array.from({ length: 200 }, () => get('/relay-challenge')));
+check('连续 200 次无令牌请求全部被拒', flood.every((res) => res.status === 401), `statuses=${[...new Set(flood.map((res) => res.status))].join(',')}`);
+
+const relayHandshake = await new Promise((resolve) => {
+  const key = randomBytes(16).toString('base64');
+  const req = request({
+    host: '127.0.0.1',
+    port: PORT,
+    path: '/ws',
+    headers: {
+      connection: 'Upgrade',
+      upgrade: 'websocket',
+      'sec-websocket-key': key,
+      'sec-websocket-version': '13',
+      'x-bridge-relay-nonce': relayNonce,
+      'x-bridge-relay-proof': createHmac('sha256', token).update(`relay-client:${relayNonce}`).digest('hex'),
+    },
+  });
+  const timer = setTimeout(() => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); }, 2500);
+  req.on('upgrade', (res, socket, head) => {
+    clearTimeout(timer);
+    let buffer = head ?? Buffer.alloc(0);
+    const read = (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length < 2) return;
+      const firstLength = buffer[1] & 0x7f;
+      let offset = 2;
+      let length = firstLength;
+      if (firstLength === 126) {
+        if (buffer.length < 4) return;
+        length = buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (firstLength === 127) {
+        if (buffer.length < 10) return;
+        length = Number(buffer.readBigUInt64BE(2));
+        offset = 10;
+      }
+      if (buffer.length < offset + length) return;
+      try {
+        resolve({ ok: res.statusCode === 101 && JSON.parse(buffer.subarray(offset, offset + length).toString('utf8'))?.type === 'relay-auth-ok' });
+      } catch (error) {
+        resolve({ ok: false, reason: String(error?.message ?? error) });
+      } finally {
+        socket.destroy();
+      }
+    };
+    socket.on('data', read);
+    if (buffer.length) read(Buffer.alloc(0));
+  });
+  req.on('response', (res) => { clearTimeout(timer); res.resume(); resolve({ ok: false, reason: `HTTP ${res.statusCode}` }); });
+  req.on('error', (error) => { clearTimeout(timer); resolve({ ok: false, reason: String(error?.message ?? error) }); });
+  req.end();
+});
+check('刷写后合法 relay 仍能完成握手', relayHandshake.ok, JSON.stringify(relayHandshake));
+
+console.log('\n=== 6. 端口被陌生人占用时：native host 必须失败关闭（这是最关键的一条） ===');
 // 模拟攻击者：先绑住端口，且它拿不出令牌（因为它读不到令牌文件）
 const squatter = createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true,"impostor":true}');
@@ -152,7 +213,7 @@ check('对方拿不出令牌时 native host 退出（不 relay）', exitCode !==
 check('日志说明了拒绝原因', /refused|401|unauthenticated|invalid relay nonce/i.test(nativeErr), nativeErr.slice(0, 300));
 check('没有把 hello 转发给占端口的人', !nativeOut.includes('hello-ack'), nativeOut.slice(0, 200));
 
-console.log('\n=== 6. 恶意端口占用者即使返回 101 也不能接管 relay ===');
+console.log('\n=== 7. 恶意端口占用者即使返回 101 也不能接管 relay ===');
 await new Promise((resolve) => squatter.close(resolve));
 const attackerNonce = 'a'.repeat(64);
 let attackerUpgradePath = '';
