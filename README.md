@@ -68,10 +68,12 @@ Chrome 会休眠 MV3 扩展的 service worker，而桥接/DSH 端**无法主动�
    node register-host.mjs unregister  # 随时撤销（扩展自动回退 WS）
    ```
 3. **改过扩展代码后**，在 `chrome://extensions` 里点一次 **↻** 重载（这步最容易被忘）。
-4. 点一下工具栏里的扩展图标：应显示绿点 +
-   「已连接（native messaging，无本地端口）」；没注册 native host 时会显示
-   「已连接（WebSocket 回退）」，功能完全一样。
-5. 最后二选一放开范围：点**「共享当前标签页」**（只放开这一个页面）或打开
+4. 点一下工具栏里的扩展图标：注册过 native host 时会显示绿点 +「已连接（native messaging，无本地端口）」。
+5. **只用 WebSocket 的情况**（没注册 native host）：本地控制面需要**能力令牌**，所以先运行
+   `node page.mjs token` 拿到令牌，粘进弹窗里的「WS 能力令牌」并保存 —— 之后才会显示
+   「已连接（WebSocket 回退）」。没粘之前扩展会明确提示"WS 回退需要能力令牌"，不会静默失败。
+   （这也正是第 2 步推荐注册 native host 的原因：走 native 时令牌由 Chrome 认证过的通道自动下发，你不用管。）
+6. 最后二选一放开范围：点**「共享当前标签页」**（只放开这一个页面）或打开
    **「完全接管浏览器」**（任意标签页，徽标变红 `ALL`）。
 
 之后扩展会自己保持连接（20 秒心跳 + 每分钟重连兜底，重连间隔上限 5 秒；切换/加载标签页也会唤醒它）。
@@ -131,7 +133,8 @@ node page.mjs wait "#result"         # 等元素出现
 ```
 
 通用参数：`--tab <id>`（指定标签页，默认当前活动页）、`--wait <ms>`（等扩展连上）、
-`--timeout <ms>`、`--json`。
+`--timeout <ms>`、`--json`；令牌相关：`--token <值>` / `--token-file <路径>`（环境变量 `PAGE_BRIDGE_TOKEN` /
+`PAGE_BRIDGE_TOKEN_FILE`）——同机跑第二个桥接时必须让它们用不同的令牌文件，否则两个实例互相 401。
 
 ## 传输方式：native messaging（首选）+ WebSocket（回退）
 
@@ -375,7 +378,7 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 
 ## 安全模型（外部代码评审后收紧）
 
-做过一次外部代码评审（[原始结论与逐条核实](docs/external-review.md)），结论是"架构不用推翻，安全模型需要重新收紧"。据此改了八处：
+做过一次外部代码评审（[原始结论与逐条核实](docs/external-review.md)），结论是"架构不用推翻，安全模型需要重新收紧"。据此改了九处，后续两轮又追加两条（10、11）：
 
 1. **本地控制面要令牌**：`127.0.0.1` 不是信任边界（本机任何进程都能连回环端口）。桥接首次启动生成
    `var/bridge-token`，此后**所有 HTTP 与 WS 握手都要出示**它（`Authorization: Bearer <token>`；
@@ -409,6 +412,11 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    WebSocket 客户端帧还必须 masked，分片和保留位会被拒绝。
 9. **运行期日志有边界**：`events.jsonl` 默认最多 5 MB，超过后从新文件开始记录；落盘 URL 会移除 query/hash，
    以免把搜索词或一次性 token 长期写入日志。可用 `--max-log-bytes` 或 `PAGE_BRIDGE_MAX_LOG_BYTES` 调整上限。
+10. **策略模块缺失时 fail-closed 且可诊断**：`policy.js` 若没加载成功，`lastError` 会明确写出
+    "policy.js 未加载…"（弹窗可见），并且**不会去建立连接**；之后任何调用得到的是这条明确错误，
+    而不是含糊的 `Cannot read properties of undefined`。
+11. **relay challenge 端点本身也要令牌**：本机任意进程都无法靠反复申请把合法 relay 的待用 nonce 挤掉；
+    令牌只出现在**回环请求头**里（不进 relay URL、不进 WS 握手），服务端证明验不过就关闭，不转发任何字节。
 
 **语义边界（写清楚，免得误解）**：域名黑名单约束的是 **agent 的操作**，不是"页面永远不会发出请求"——
 `page_click` 点到链接、页面自己的 form submit 都可能产生导航。要做到后者需要浏览器级网络策略，
@@ -421,12 +429,15 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 | 脚本 | 覆盖 |
 |---|---|
 | `dev/grant-policy-test.mjs` | 权限策略 26 个断言（含 `example.com.evil.com` 后缀伪装） |
-| `dev/sw-load-test.mjs` | 用假 `chrome` API 加载 service worker，11 个场景 24 断言 |
+| `dev/sw-load-test.mjs` | 用假 `chrome` API 加载 service worker：多场景 + 提权守卫（sender 白名单）+ origin 隔离 + bootstrap 竞态（1b）+ `policy.js` 加载失败（1c） |
+| `dev/bridge-auth-test.mjs` | 本地控制面能力令牌：HTTP/WS 认证、relay 失败关闭、challenge 端点抗刷 nonce |
+| `dev/bridge-queue-test.mjs` | per-tab 命令队列、instance 路由、WS 帧上限 |
 | `dev/native-framing-test.mjs` | native messaging 帧往返：host 模式 + relay 模式 |
 | `dev/extension-id-test.mjs` | Chromium 扩展 ID 推导，Chrome/Edge 一致性 |
 | `dev/smoke-snapshot.mjs` / `smoke-mcp.mjs` | MCP 层冒烟（自带桥接 + 假扩展，隔离端口） |
 
-本地可以用 `npm run test:browser:fixtures` 一次跑完快照、目标复核和按键测试；它优先使用 DSH 自带的
+本地可以用 `npm run test:browser:fixtures` 一次跑完 4 个脚本：快照探针、目标复核、合成按键、**预览图生成**
+（最后一个同时是"脚本有没有断链"的守卫——它曾因重构漏掉一个 `import` 而静默烂掉）；这一组优先使用 DSH 自带的
 `playwright-core`，也接受项目根目录的本地安装。真实 Edge native E2E 可用 `npm run test:browser:native`。
 GitHub Actions 里另有手动触发的 [`.github/workflows/browser-e2e.yml`](.github/workflows/browser-e2e.yml)：
 它在 Windows runner 上安装 Playwright runtime、注册 Edge native host，再运行这组测试；之所以不并入每次 PR，
@@ -450,20 +461,22 @@ GitHub Actions 里另有手动触发的 [`.github/workflows/browser-e2e.yml`](.g
 | `Cannot access contents of the page` | 该页面受保护（chrome://、扩展商店、部分 PDF 阅读器），属预期 |
 | `eval` 在严格 CSP 站点失败 | 换 `--world MAIN` 反而更差时，改用 `click`/`text`/`state` 等 DOM 途径 |
 | 一次点击开了两个标签页 | 已修复（旧版 click 同时派发合成 click 与 `el.click()`）。改完 background.js 后需在 `chrome://extensions` 点一次 ↻ 重载扩展 |
-| 端口被占 | `bridge.mjs --port 8800` + 改 `extension/background.js` 里的 `WS_URL` 后重载扩展 |
+| 端口被占（已有桥接在跑） | **通常不用管**：native host 会用一次性 challenge-response 自动降级为**中继**，把帧转发给占端口的那个桥接；若对方拿不出令牌则**失败关闭**（打日志并退出），绝不把 Chrome 认证过的通道交出去 |
+| 想同时跑两个桥接 | `bridge.mjs --port 8800 --token-file var/token-8800`，并让扩展用同一套地址与令牌（`extension/background.js` 的 `WS_BASE` + 弹窗里粘贴对应令牌），改完在 `chrome://extensions` 点一次 ↻ |
 | DSH 重启后失效 | 桥接是 DSH 的后台任务，随之结束；重跑第 1 步即可（也可做成开机自启） |
 
 ## DSH 插件（新对话自动可用）
 
 `dsh-plugin/` 是一个 profile bundle，把本桥接挂成 **MCP 工具**，于是**每个会话**都自带
-`mcp__page-bridge__*`（17 个），不需要先解释路径：
+`mcp__page-bridge__*`（**19 个**），不需要先解释路径：
 
 | 工具 | 作用 |
 |---|---|
-| `page_state` / `page_text` / `page_tabs` / `page_events` | 读你正在看的页面 / 全文 / 标签页 / 浏览轨迹 |
-| `page_click` / `page_type` / `page_select` / `page_scroll` / `page_highlight` | 操作页面（高亮会在你屏幕上闪一下） |
-| `page_eval` / `page_navigate` / `page_close` / `page_screenshot` | 执行 JS / 跳转 / 关标签 / 截图 |
-| `page_status` / `bridge_stop` | 连接状态 / 停掉桥接（下次自动重启） |
+| `page_snapshot` | **ARIA 快照 + `[ref=eN]`**：最常用的"看清楚现在页面上有什么"；变更类工具执行后会自动附带一份 |
+| `page_state` / `page_text` / `page_tabs` / `page_events` | 页面摘要 / 全文 / 标签页 / 浏览轨迹 |
+| `page_click` / `page_type` / `page_key` / `page_select` / `page_scroll` / `page_highlight` | 操作页面（`page_key` 发带 `keyCode` 的真实按键；高亮会在你屏幕上闪一下） |
+| `page_eval` / `page_navigate` / `page_open` / `page_close` / `page_screenshot` | 执行 JS / 跳转 / 新开标签页 / 关标签 / 截图 |
+| `page_use_browser` / `page_status` / `bridge_stop` | 多浏览器时固定目标 / 连接状态 / 停掉桥接（下次自动重启） |
 
 安装方式（**二选一，不要同时装**，`serverName: page-bridge` 必须唯一）：
 
