@@ -17,7 +17,7 @@
 - 桥接：`bridge.mjs`（零依赖，自带 WebSocket 与 native messaging 两种帧实现；闲置自动退出）
 - 注册工具：`register-host.mjs`（用户级注册/查看/卸载 native host，可回退）
 - 命令行：`page.mjs`（按需拉起桥接）
-- MCP 服务端：`mcp-server.mjs`（把桥接包成 17 个 MCP 工具）
+- MCP 服务端：`mcp-server.mjs`（把桥接包成 18 个 MCP 工具）
 - DSH 插件：`dsh-plugin/`（profile bundle，让新会话自带 `mcp__page-bridge__*`）
 - 自检/调试：`mock-extension.mjs`（假扩展，无浏览器也能验证链路）、`smoke-mcp.mjs`（MCP 层冒烟测试）、`dev/`：
   - `snapshot-probe.mjs` 快照算法探针（在真实 Chromium 里跑扩展里的同一段代码）

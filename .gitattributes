@@ -1,0 +1,10 @@
+# 统一换行：仓库内以 LF 存储，检出时按平台转换
+* text=auto
+
+# 二进制资产别动
+*.png binary
+*.ico binary
+
+# Windows 专用启动脚本保持 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
