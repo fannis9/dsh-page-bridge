@@ -388,15 +388,20 @@ function PAGE_OP(payload) {
       if (nodes >= maxNodes) { truncated = true; return; }
       const tag = el.tagName.toLowerCase();
       if (SKIP.has(tag)) return;
-      if (!shown(el)) return;
+      const vis = visibilityOf(el);
+      if (vis === 'hidden') return;
+      // 'flat' 容器（display:contents / visibility:hidden 祖先）要下钻，但**自身不产出节点、
+      // 也不分配 ref** —— 否则会给模型一个指向"看不见的按钮"的 ref，点下去照样触发（例如
+      // 隐藏的「Delete this repository」确认按钮）。只有真正渲染出来的元素才可寻址。
+      const visibleHere = vis === 'shown';
       if (depth > maxDepth) { truncated = true; return; }
 
       const role = roleOf(el);
-      const name = role ? nameOf(el, role) : '';
+      const name = visibleHere && role ? nameOf(el, role) : '';
       const focusable = el.tabIndex >= 0 && tag !== 'body' && tag !== 'html';
       const actionable = Boolean(role && (ACTIONABLE.has(role) || el.hasAttribute('role'))) || focusable;
       let ref = '';
-      if (actionable && refs < maxRefs) {
+      if (visibleHere && actionable && refs < maxRefs) {
         refs += 1;
         ref = `e${refs}`;
         el.setAttribute('data-dsh-ref', ref);
@@ -408,7 +413,7 @@ function PAGE_OP(payload) {
       const children = childNodes.filter((c) => !SKIP.has(c.tagName.toLowerCase()) && shown(c));
       const namingOnly = TRANSPARENT_TAGS.has(tag) && !el.hasAttribute('data-dsh-ref');
       const structural = Boolean(role) && ALWAYS_EMIT.has(role) && children.length > 0;
-      const emit = !namingOnly && Boolean(role)
+      const emit = visibleHere && !namingOnly && Boolean(role)
         && (structural || Boolean(name) || Boolean(ref) || children.length === 0 || el.hasAttribute('role'));
       if (emit) {
         lines.push(`${'  '.repeat(depth)}- ${role}${name ? ` "${name}"` : ''}${ref ? ` [ref=${ref}]` : ''}${attrsOf(el, role)}`);
@@ -417,7 +422,7 @@ function PAGE_OP(payload) {
       const childDepth = emit ? depth + 1 : depth;
       const before = lines.length;
       for (const child of children) walk(child, childDepth);
-      if (!emit && !namingOnly && lines.length === before && children.length === 0) {
+      if (visibleHere && !emit && !namingOnly && lines.length === before && children.length === 0) {
         const text = norm(el.innerText || el.textContent);
         if (text.length > 1) {
           lines.push(`${'  '.repeat(depth)}- text "${cut(text, maxName)}"`);

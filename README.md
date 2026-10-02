@@ -264,8 +264,10 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
      GitHub 的对话框就藏在 `<dialog-helper>` 里，栽在这上面会让"对话框明明在屏幕上、快照里什么都没有"；
   3. **`visibility: hidden` 的祖先 + 后代 `visibility: visible` 翻盘**（CSS 允许，`display:none` 不行）。
 
-  反例保留：`display: none` / `opacity: 0` / `aria-hidden` 里的内容依然会被正确排除。
-  自检：`dev/snapshot-probe.mjs` 的夹具同时造了这三类容器**和**一个反例（见输出里的「隐形容器自检」）。
+  反例保留：`display: none` / `opacity: 0` / `aria-hidden` 里的内容依然会被正确排除；
+  而且**自身不可见的元素不会分配 ref**——否则模型会拿到指向"看不见的按钮"的 ref（例如隐藏的
+  「Delete this repository」确认按钮），点下去照样会触发。
+  自检：`dev/snapshot-probe.mjs` 的夹具同时造了这三类容器**和两个反例**（见输出的「隐形容器自检」）。
 - **截图要窗口在前台**：`page_screenshot` 会先检查目标窗口是否聚焦/最小化，不在前台就**立刻**报错
   （`captureVisibleTab` 在后台窗口上会卡住）；MCP 侧超时也收紧到 15 秒。只要读内容就别用截图。
 - 快照算法在扩展里（`extension/background.js` 的 `#region aria-snapshot` 区块），自包含以便注入；

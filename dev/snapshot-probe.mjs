@@ -68,6 +68,7 @@ const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
     <my-widget id="widget"></my-widget>
     <div style="display:contents"><button>扁平容器里的按钮</button></div>
     <div style="visibility:hidden"><button style="visibility:visible">复活按钮</button></div>
+    <button style="visibility:hidden">不可见的按钮</button>
   </main>
   <footer>© 2026 测试页脚</footer>
   <script>
@@ -115,6 +116,7 @@ try {
         shadowInYaml: yaml.includes('影子按钮'),
         flatInYaml: yaml.includes('扁平容器里的按钮'),
         reviveInYaml: yaml.includes('复活按钮'),
+        invisibleInYaml: yaml.includes('不可见的按钮'),
         hiddenInYaml: yaml.includes('隐藏按钮'),
         flatRect: rect ? Math.round(rect.width) + 'x' + Math.round(rect.height) : 'n/a',
         deepShadow: deepQueryAll('button').filter((el) => (el.innerText || '').includes('影子按钮')).length,
@@ -125,6 +127,7 @@ try {
     console.log(`  shadow root 里的按钮进快照     : ${hidden.shadowInYaml ? '✅' : '❌'}`);
     console.log(`  display:contents 里的按钮进快照: ${hidden.flatInYaml ? '✅' : '❌'}（该容器自身 rect = ${hidden.flatRect}）`);
     console.log(`  visibility:hidden 里被后代翻盘的按钮: ${hidden.reviveInYaml ? '✅' : '❌'}`);
+    console.log(`  自身不可见的按钮不该拿到 ref      : ${hidden.invisibleInYaml ? '❌ 混进来了（可能点到看不见的元素）' : '✅ 正确屏蔽'}`);
     console.log(`  display:none 里的按钮仍应被排除    : ${hidden.hiddenInYaml ? '❌ 混进来了' : '✅ 正确排除'}`);
     console.log(`  deepQueryAll 找到影子按钮       : ${hidden.deepShadow > 0 ? '✅' : '❌'}`);
     console.log(`  普通 querySelectorAll 的 button 数（少于总数即证明隔着 shadow）: ${hidden.plainQsa}`);
