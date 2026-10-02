@@ -25,7 +25,7 @@
 - 桥接：`bridge.mjs`（零依赖，自带 WebSocket 与 native messaging 两种帧实现；闲置自动退出）
 - 注册工具：`register-host.mjs`（用户级注册/查看/卸载 native host，可回退）
 - 命令行：`page.mjs`（按需拉起桥接）
-- MCP 服务端：`mcp-server.mjs`（把桥接包成 18 个 MCP 工具）
+- MCP 服务端：`mcp-server.mjs`（把桥接包成 19 个 MCP 工具）
 - DSH 插件：`dsh-plugin/`（profile bundle，让新会话自带 `mcp__page-bridge__*`）
 - 自检/调试：`mock-extension.mjs`（假扩展，无浏览器也能验证链路）、`smoke-mcp.mjs`（MCP 层冒烟测试）、`dev/`：
   - `snapshot-probe.mjs` 快照算法探针（在真实 Chromium 里跑扩展里的同一段代码）
@@ -36,6 +36,7 @@
   - `chrome-extension-state.mjs` / `chrome-storage-scan.mjs` Chrome 侧扩展状态与存储诊断
   - `extension-id-test.mjs` 按 Chromium 算法算出扩展 ID，并比对 Chrome/Edge 两份 native 清单
   - `make-popup-preview.mjs` 重新渲染 `docs/popup-preview.png`（假 `chrome` API 喂状态，headless 截图）
+  - `key-dispatch-test.mjs` 合成按键测试（真浏览器；验证 keyCode/which 与「回车提交」路径，含反例）
   - `native-e2e-test.mjs` 真实浏览器端到端（⚠️ 官方 Chrome 137+ 与 Edge 154 都移除了
     `--load-extension`，会直接 SKIP；需 Chromium / Chrome for Testing）
 - 运行期产物：`var/`（`events.jsonl` 轨迹、`shots/` 截图）——**可随时清空**
@@ -91,6 +92,7 @@ node page.mjs html --max 60000       # 原始 HTML
 node page.mjs eval "document.title"  # 执行任意 JS（--world MAIN 可读页面变量）
 node page.mjs click "text=登录"       # 按 CSS 选择器或 text= 文本点击
 node page.mjs type "#q" "关键词"      # 输入（--submit 顺带回车提交）
+node page.mjs key Enter "#q"          # 合成按键（带 keyCode；支持 Backspace/ArrowDown 等，--repeat N）
 node page.mjs select "#city" "杭州"
 node page.mjs scroll "#price"        # 或 --by 800
 node page.mjs highlight "#total"     # 在页面上高亮某元素 2.5 秒（你能看见）
@@ -270,6 +272,12 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
   自检：`dev/snapshot-probe.mjs` 的夹具同时造了这三类容器**和两个反例**（见输出的「隐形容器自检」）。
 - **截图要窗口在前台**：`page_screenshot` 会先检查目标窗口是否聚焦/最小化，不在前台就**立刻**报错
   （`captureVisibleTab` 在后台窗口上会卡住）；MCP 侧超时也收紧到 15 秒。只要读内容就别用截图。
+- **合成按键带真实 `keyCode`/`which`**：`page_key {key:"Enter"}`（CLI：`key Enter [选择器]`）支持
+  Enter / Backspace / Delete / Escape / Tab / 方向键 / Home / End / PageUp·Down / 单个字符，可 `repeat`。
+  为什么需要：只带 `key` 的 `KeyboardEvent` 其 `keyCode` 是 **0**，而 React 与设计系统（GitHub 的 Primer
+  就是）常按 `keyCode` 分支，于是"按回车提交 token"会**静默失效**——这正是我加 topics 时踩的坑。
+  `type --submit` 在没有 `<form>` 时也改用这套按键。
+  真浏览器自检：`dev/key-dispatch-test.mjs`（含一个**反例**：旧写法派发回车应当提交不了）。
 - 快照算法在扩展里（`extension/background.js` 的 `#region aria-snapshot` 区块），自包含以便注入；
   `dev/snapshot-probe.mjs` 会把这同一段代码抽出来在真实 Chromium 里跑，改算法时可即时验证：
   ```powershell

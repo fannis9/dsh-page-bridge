@@ -537,6 +537,63 @@ function PAGE_OP(payload) {
     return { ok: true, ...describe(el) };
   }
 
+  // #region key-dispatch
+  /**
+   * Synthetic key press that behaves like a real one.
+   *
+   * Why the legacy fields matter: React handlers (and design systems like Primer, used by
+   * GitHub) still branch on `event.keyCode` / `event.which`. A KeyboardEvent built with only
+   * `key` has keyCode === 0, so "press Enter to commit a token" silently does nothing.
+   * Chomium accepts keyCode/which in the KeyboardEventInit dict, so we set them here.
+   *
+   * Kept in its own region so dev/key-dispatch-test.mjs can extract and exercise it in a
+   * real browser (same trick as the aria-snapshot region).
+   */
+  const KEYCODES = {
+    Enter: 13, Backspace: 8, Delete: 46, Tab: 9, Escape: 27, Esc: 27, Space: 32,
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+    Home: 36, End: 35, PageUp: 33, PageDown: 34, Insert: 45, F5: 116,
+  };
+
+  const keyInfo = (name) => {
+    const raw = String(name ?? '');
+    const single = raw.length === 1;
+    const normalized = single ? raw.toUpperCase() : raw;
+    const keyCode = single
+      ? normalized.charCodeAt(0)
+      : (KEYCODES[normalized] ?? KEYCODES[raw] ?? 0);
+    const code = single
+      ? (/[0-9]/.test(raw) ? `Digit${raw}` : `Key${normalized}`)
+      : (normalized === 'Space' ? 'Space' : normalized);
+    const key = normalized === 'Space' ? ' ' : (single ? raw : normalized);
+    return { key, code, keyCode, which: keyCode };
+  };
+
+  const pressKey = (target, name, repeat = 1) => {
+    const raw = String(name ?? '');
+    const single = raw.length === 1;
+    const known = single
+      || Object.prototype.hasOwnProperty.call(KEYCODES, raw)
+      || Object.prototype.hasOwnProperty.call(KEYCODES, raw.toUpperCase() === raw ? raw : raw[0].toUpperCase() + raw.slice(1));
+    if (!known) {
+      return { ok: false, reason: `不认识的按键：${name}（可用 Enter/Backspace/Delete/Tab/Escape/Space/ArrowUp/Down/Left/Right/Home/End/PageUp/PageDown，或单个字符）` };
+    }
+    const info = keyInfo(name);
+    if (target && typeof target.focus === 'function') {
+      try { target.focus(); } catch { /* ignore */ }
+    }
+    const node = target ?? document.activeElement ?? document.body;
+    const times = Math.max(1, Math.min(Number(repeat) || 1, 20));
+    const init = { ...info, bubbles: true, cancelable: true, composed: true };
+    for (let i = 0; i < times; i += 1) {
+      node.dispatchEvent(new KeyboardEvent('keydown', init));
+      if (info.key.length === 1) node.dispatchEvent(new KeyboardEvent('keypress', init));
+      node.dispatchEvent(new KeyboardEvent('keyup', init));
+    }
+    return { ok: true, key: info.key, keyCode: info.keyCode, repeat: times, tag: node.tagName?.toLowerCase() ?? null };
+  };
+  // #endregion key-dispatch
+
   if (k === 'type') {
     const el = find(args.selector);
     if (!el) return { ok: false, reason: 'element not found' };
@@ -556,12 +613,16 @@ function PAGE_OP(payload) {
     if (args.submit) {
       const form = el.form ?? el.closest('form');
       if (form) { if (form.requestSubmit) form.requestSubmit(); else form.submit(); }
-      else if (!el.isContentEditable) {
-        el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-      }
+      // 没有 form 时用带 keyCode 的合成回车——很多组件（Primer 等）只认这个
+      else pressKey(el, 'Enter');
     }
     return { ok: true, tag: el.tagName.toLowerCase(), value: el.value ?? value };
+  }
+
+  if (k === 'key') {
+    const target = args.selector ? find(args.selector) : (document.activeElement ?? document.body);
+    if (args.selector && !target) return { ok: false, reason: `找不到元素：${args.selector}` };
+    return pressKey(target, args.key, args.repeat);
   }
 
   if (k === 'select') {
@@ -906,6 +967,8 @@ async function handle(name, args) {
       return inject(tabId, 'eval', { code: args.code, worldName: args.world ?? 'MAIN' }, args.world ?? 'MAIN');
     case 'click':
       return inject(tabId, 'click', { selector: args.selector }, args.world);
+    case 'key':
+      return inject(tabId, 'key', { selector: args.selector, key: args.key, repeat: args.repeat }, args.world);
     case 'type':
       return inject(tabId, 'type', { selector: args.selector, text: args.text, submit: args.submit }, args.world);
     case 'select':

@@ -15,10 +15,10 @@
 | MCP 服务端 | `../mcp-server.mjs` | 把桥接包成 17 个 MCP 工具；**按需拉起桥接**，闲置自动退出 |
 | 本插件 | 本目录 | 用 profile patch 挂载 `@deepseek-ai/dsh-mcp-client` 指向 MCP 服务端 |
 
-## 工具清单（18 个）
+## 工具清单（19 个）
 
 `page_status` `page_use_browser` `page_open` `page_snapshot` `page_state` `page_text` `page_tabs`
-`page_events` `page_eval` `page_click` `page_type` `page_select` `page_scroll` `page_highlight`
+`page_events` `page_eval` `page_click` `page_type` `page_key` `page_select` `page_scroll` `page_highlight`
 `page_screenshot` `page_navigate` `page_close` `bridge_stop`
 
 `page_snapshot` 返回 Playwright 风格 ARIA 树，交互元素带 `[ref=eN]`；可用 `selector` 只抓某棵子树

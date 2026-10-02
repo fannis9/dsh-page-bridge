@@ -368,6 +368,29 @@ const tools = [
     },
   },
   {
+    name: 'page_key',
+    description: '发送一次按键（Enter / Backspace / Delete / Escape / Tab / ArrowUp|Down|Left|Right / Home / End / PageUp|Down / 单个字符）。'
+      + '带真实的 keyCode/which，所以对「必须按回车才提交」的 React 组件（如 GitHub 的 Primer 输入框）有效。'
+      + '不传 selector 时发给当前焦点元素。执行后自动返回新快照。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: '键名，如 Enter、Backspace、ArrowDown；单个字符也可以（如 a）' },
+        selector: { type: 'string', description: '目标元素（CSS 或 text=）；省略则发给当前焦点元素' },
+        ref: { type: 'string', description: '快照里的元素引用，如 e12' },
+        repeat: { type: 'number', description: '重复次数，默认 1（上限 20）' },
+        tabId: { type: 'number' },
+      },
+      required: ['key'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const target = (args.ref || args.selector) ? targetOf(args) : undefined;
+      const res = await cmd('key', { key: args.key, selector: target, repeat: args.repeat, tabId: args.tabId });
+      return snapshotAfter(`Pressed ${args.key}${target ? ` on ${target}` : ''} → ${res?.ok ? 'ok' : json(res)}`);
+    },
+  },
+  {
     name: 'page_type',
     description: '在输入框/文本域中填写内容（派发 input+change 事件，兼容 React）。目标可用 selector 或快照 ref。'
       + '执行后自动返回新快照。',

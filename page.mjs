@@ -133,7 +133,7 @@ function printState(state) {
 }
 
 if (!command || command === 'help' || flags.help) {
-  console.log('commands: status | grant | tabs | state | snapshot | text | html | eval | click | type | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
+  console.log('commands: status | grant | tabs | state | snapshot | text | html | eval | click | type | key | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
   process.exit(command ? 0 : 1);
 }
 
@@ -207,6 +207,8 @@ try {
     out(await cmd('eval', { code: rest[1] ?? '', ...(flags.world ? { world: flags.world } : {}) }));
   } else if (command === 'click') {
     out(await cmd('click', { selector: rest[1] ?? '' }));
+  } else if (command === 'key') {
+    out(await cmd('key', { key: rest[1] ?? '', selector: rest[2], repeat: Number(flags.repeat ?? 1) }));
   } else if (command === 'type') {
     out(await cmd('type', { selector: rest[1] ?? '', text: rest[2] ?? '', submit: Boolean(flags.submit) }));
   } else if (command === 'select') {
