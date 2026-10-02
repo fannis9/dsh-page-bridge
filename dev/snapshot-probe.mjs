@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+/**
+ * snapshot-probe.mjs — run the extension's ARIA snapshot builder against a real page.
+ *
+ * The builder lives inside the injected PAGE_OP function in extension/background.js,
+ * delimited by `#region aria-snapshot` / `#endregion aria-snapshot`. This probe extracts
+ * that block (single source of truth) and executes it in a real Chromium page, so the
+ * algorithm can be iterated without loading the extension.
+ *
+ *   node dev/snapshot-probe.mjs                    # built-in fixture
+ *   node dev/snapshot-probe.mjs --url https://example.com
+ *   node dev/snapshot-probe.mjs --url ... --max-nodes 800 --refs
+ */
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? 'C:/Users/Cypress/.dsh/profiles/desktop';
+const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
+const { chromium } = require('playwright-core');
+
+const argv = process.argv.slice(2);
+const flag = (name, fallback) => {
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : (i >= 0 ? true : fallback);
+};
+const url = flag('url', null);
+const maxNodes = Number(flag('max-nodes', 500));
+const showRefs = Boolean(flag('refs', false));
+const selector = flag('selector', null);
+
+const CHROME = [
+  process.env.DSH_BROWSER_EXECUTABLE,
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+].find((p) => p && require('node:fs').existsSync(p));
+
+const source = readFileSync(join(HERE, '..', 'extension', 'background.js'), 'utf8');
+const region = /\/\/ #region aria-snapshot([\s\S]*?)\/\/ #endregion aria-snapshot/.exec(source);
+if (!region) {
+  console.error('在后端脚本里找不到 #region aria-snapshot 区块');
+  process.exit(1);
+}
+const builder = region[1];
+
+const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>快照夹具</title></head>
+<body>
+  <header><nav aria-label="主导航"><a href="/home">首页</a><a href="/docs">文档</a></nav></header>
+  <main>
+    <h1>探索未至之境</h1>
+    <h2>产品</h2>
+    <p>这是一段普通正文，用来检查 text 兜底。</p>
+    <form>
+      <label for="q">搜索</label><input id="q" placeholder="输入关键词">
+      <select id="city"><option>北京</option><option selected>上海</option></select>
+      <input type="checkbox" id="ok" checked><label for="ok">同意条款</label>
+      <input type="radio" name="plan" id="p1"><label for="p1">标准版</label>
+      <textarea id="note" aria-label="备注">已有内容</textarea>
+      <button type="submit">提交</button>
+      <button disabled>不可用按钮</button>
+    </form>
+    <ul><li>第一项</li><li>第二项</li></ul>
+    <img alt="示例图" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+    <div style="display:none"><button>隐藏按钮</button></div>
+  </main>
+  <footer>© 2026 测试页脚</footer>
+</body></html>`;
+
+const browser = await chromium.launch({ executablePath: CHROME, headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  if (url) await page.goto(String(url), { waitUntil: 'domcontentloaded', timeout: 45_000 });
+  else await page.setContent(FIXTURE, { waitUntil: 'load' });
+  await page.waitForTimeout(400);
+
+  const result = await page.evaluate(`(() => {
+    ${builder}
+    const wanted = ${JSON.stringify(selector)};
+    const root = wanted ? document.querySelector(wanted) : null;
+    if (wanted && !root) return { error: '找不到元素：' + wanted };
+    return buildAriaSnapshot({ maxNodes: ${maxNodes}, root });
+  })()`);
+  if (result?.error) {
+    console.error(result.error);
+    process.exit(1);
+  }
+
+  console.log('=== ARIA 快照 ===');
+  console.log(result.yaml);
+  console.log('=== 统计 ===');
+  console.log(JSON.stringify({ title: result.title, url: result.url, nodes: result.nodes, refs: result.refs, truncated: result.truncated }, null, 2));
+
+  if (showRefs) {
+    console.log('=== ref 解析自检 ===');
+    const resolved = await page.evaluate(() => [...document.querySelectorAll('[data-dsh-ref]')].map((el) => ({
+      ref: el.getAttribute('data-dsh-ref'),
+      tag: el.tagName.toLowerCase(),
+      text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+      visible: el.getBoundingClientRect().width > 1,
+    })));
+    for (const r of resolved) console.log(`  ${r.ref.padEnd(5)} ${r.tag.padEnd(8)} visible=${r.visible} ${r.text}`);
+    const bad = resolved.filter((r) => !r.visible);
+    console.log(bad.length ? `⚠️ 有 ${bad.length} 个 ref 指向不可见元素` : '✅ 所有 ref 都指向可见元素');
+  }
+} finally {
+  await browser.close();
+}

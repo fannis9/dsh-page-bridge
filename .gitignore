@@ -1,0 +1,12 @@
+# 运行期状态：events.jsonl 是你的浏览轨迹，shots/ 是页面截图 —— 绝不入库
+var/
+
+# 由 register-host.mjs 生成，内容是本机 node 与脚本的绝对路径
+native-host.cmd
+native-host.sh
+
+# 杂项
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

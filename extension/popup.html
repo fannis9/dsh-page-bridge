@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DSH Page Bridge</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #14161a; --muted: #6b7280; --line: #e6e8ee; --soft: #f5f7fb;
+    --accent: #2f6df6; --ok: #12a150; --warn: #d97706; --off: #9aa1ad;
+    --shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #16181d; --fg: #e8eaee; --muted: #9aa1ad; --line: #2a2e37; --soft: #1d2027;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); }
+  }
+  * { box-sizing: border-box; }
+  body { width: 340px; margin: 0; padding: 12px;
+    font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  .head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .head img { width: 30px; height: 30px; border-radius: 8px; }
+  .head .title { flex: 1; }
+  .head h1 { margin: 0; font-size: 14px; font-weight: 650; }
+  .head p { margin: 1px 0 0; font-size: 11px; color: var(--muted); }
+  .card { border: 1px solid var(--line); border-radius: 11px; background: var(--soft);
+    padding: 11px; margin-bottom: 9px; box-shadow: var(--shadow); }
+  .card.full { border-color: rgba(209,67,67,.35); }
+  .card.full.on { border-color: #d14343; background: rgba(209,67,67,.09); }
+  .warnline { font-size: 11px; color: #d14343; margin-top: 5px; font-weight: 600; }
+  .label { font-weight: 650; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  button.act { flex: 1; padding: 8px 10px; border-radius: 9px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: inherit; font-weight: 600; }
+  button.act:hover { border-color: var(--accent); color: var(--accent); }
+  button.act.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.act.primary:hover { filter: brightness(1.06); color: #fff; }
+  button.act.danger { border-color: #d14343; color: #d14343; }
+  button.act:disabled { opacity: .5; cursor: not-allowed; }
+  .switch { position: relative; width: 40px; height: 22px; flex: 0 0 auto; border: 0; padding: 0;
+    border-radius: 999px; cursor: pointer; background: var(--off); transition: background .16s ease; }
+  .switch[aria-checked="true"] { background: var(--ok); }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; transition: transform .16s ease; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .switch[aria-checked="true"]::after { transform: translateX(18px); }
+  .status { display: flex; align-items: center; gap: 7px; font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: 0 0 auto; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px rgba(18,161,80,.15); }
+  .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(217,119,6,.15); }
+  .mono { font-size: 11px; color: var(--muted); word-break: break-all; }
+  .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  details { border: 1px solid var(--line); border-radius: 11px; background: var(--soft); margin-bottom: 9px; }
+  details > summary { cursor: pointer; padding: 9px 11px; font-weight: 650; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::after { content: "▾"; float: right; color: var(--muted); }
+  details[open] > summary::after { content: "▴"; }
+  details .body { padding: 0 11px 11px; }
+  textarea { width: 100%; min-height: 46px; resize: vertical; padding: 6px 8px; font: 11px/1.5 ui-monospace, Consolas, monospace;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  .out { min-height: 15px; font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .out.err { color: #d14343; }
+  .foot { font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 7px; }
+  code { background: rgba(127,127,127,.14); padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <img src="icons/icon48.png" alt="">
+    <div class="title">
+      <h1>DSH Page Bridge</h1>
+      <p id="version">本地直连 · 仅 127.0.0.1</p>
+    </div>
+    <button class="switch" id="toggle" role="switch" aria-checked="false" aria-label="启用页面直连"></button>
+  </div>
+
+  <div class="card full" id="fullCard">
+    <div class="row">
+      <div class="label" style="flex:1">完全接管浏览器</div>
+      <button class="switch" id="fullToggle" role="switch" aria-checked="false" aria-label="完全接管浏览器"></button>
+    </div>
+    <div class="hint" id="fullHint">
+      <b>关闭时</b>：只能操作你手动共享的那一个标签页。<br>
+      <b>打开后</b>：Agent 可操作<b>任意标签页</b>、自由开关与跳转标签页、打开新标签页；域名黑名单依然生效；徽标变红 <code>ALL</code>。
+    </div>
+    <div class="warnline" id="fullWarn" style="display:none">⚠️ 已完全接管：Agent 现在能读取并操作你所有标签页</div>
+  </div>
+
+  <div class="card">
+    <div class="label" id="shareLabel">未共享任何标签页</div>
+    <div class="hint" id="shareHint">只有被共享的那个标签页能被 DSH 读取/操作，其他标签页一律不可见。</div>
+    <div class="ellipsis" id="currentTab" style="margin-top:6px">—</div>
+    <div class="mono" id="currentUrl"></div>
+    <div class="row" style="margin-top:9px">
+      <button class="act primary" id="share">共享当前标签页</button>
+      <button class="act danger" id="unshare" disabled>停止共享</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">检查中…</span></div>
+    <div class="mono" id="endpoint">—</div>
+    <div class="row" style="margin-top:8px">
+      <span class="hint" style="flex:1">传输方式</span>
+      <select id="transport" style="width:132px;padding:4px 6px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--fg);font:inherit">
+        <option value="auto">自动（native 优先）</option>
+        <option value="native">仅 native messaging</option>
+        <option value="ws">仅 WebSocket</option>
+      </select>
+    </div>
+  </div>
+
+  <details id="policyBox">
+    <summary>域名策略（白/黑名单）</summary>
+    <div class="body">
+      <div class="hint">每行或逗号分隔一条；<code>example.com</code> 匹配自身与子域，<code>*.example.com</code> 只匹配子域。</div>
+      <div class="label" style="margin-top:8px">黑名单（永不共享）</div>
+      <textarea id="blockDomains" placeholder="bank.com&#10;mail.example.com"></textarea>
+      <div class="label" style="margin-top:8px">白名单（留空 = 除黑名单外都允许）</div>
+      <textarea id="allowDomains" placeholder="github.com&#10;*.deepseek.com"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button class="act" id="savePolicy">保存策略</button>
+      </div>
+      <div class="hint" id="policyNote" style="margin-top:6px"></div>
+    </div>
+  </details>
+
+  <div class="row" style="margin-bottom:9px">
+    <button class="act" id="reconnect">重新连接</button>
+    <button class="act" id="push" disabled>上报当前页</button>
+  </div>
+
+  <div class="out" id="out"></div>
+  <div class="foot">
+    徽标：<code>ON</code> 已共享 · <code>ALL</code> 完全接管 · <code>···</code> 已共享未连上 · <code>·</code> 未共享 · 空 已停用<br>
+    共享绑定到「标签页 + 域名」，换站点或关闭标签页会自动取消；完全接管不受此限制。
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
