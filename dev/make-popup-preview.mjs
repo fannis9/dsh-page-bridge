@@ -8,7 +8,7 @@
  *
  *   node dev/make-popup-preview.mjs
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -20,6 +20,9 @@ const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'prof
 const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
 const { chromium } = require('playwright-core');
 
+/** 版本号从 manifest 读，避免预览图里印着过期版本 */
+const MANIFEST = JSON.parse(readFileSync(join(ROOT, 'extension', 'manifest.json'), 'utf8'));
+
 const CHROME = [
   process.env.DSH_BROWSER_EXECUTABLE,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -28,7 +31,7 @@ const CHROME = [
 
 /** 预览里要展示的状态：native 传输已连接、一个标签页被共享、策略为默认（空） */
 const STATE = {
-  version: '0.5.3',
+  version: MANIFEST.version,
   grant: {
     tabId: 349827257,
     origin: 'https://github.com',
