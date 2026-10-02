@@ -282,15 +282,29 @@ function PAGE_OP(payload) {
     const norm = (s) => String(s ?? '').replace(/[\s\u00a0]+/g, ' ').trim();
     const cut = (s, n) => (s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s);
 
-    const shown = (el) => {
-      if (!el || el.nodeType !== 1) return false;
+    /**
+     * Three-state visibility. The middle state matters most: some containers have no box or
+     * are themselves invisible while their **descendants** still render:
+     *   - `display: contents` → own rect is 0×0, children lay out normally
+     *     (this is what hid GitHub's dialog inside <dialog-helper>);
+     *   - `visibility: hidden` → a descendant may set `visibility: visible` and re-appear
+     *     (CSS allows it; `display: none` and `opacity: 0` cannot be undone).
+     * Pruning on the ancestor therefore drops visible content. So:
+     *   'hidden' — 后代无法翻盘（display:none / opacity:0 / hidden / aria-hidden）→ 剪掉
+     *   'flat'   — 自身不可见或没有盒子，但子树可能有可见内容 → 继续下钻，不产出节点
+     *   'shown'  — 正常可见
+     */
+    const visibilityOf = (el) => {
+      if (!el || el.nodeType !== 1) return 'hidden';
       const st = getComputedStyle(el);
-      if (st.display === 'none' || st.visibility === 'hidden' || st.visibility === 'collapse' || Number(st.opacity) === 0) return false;
-      if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return false;
+      if (st.display === 'none' || Number(st.opacity) === 0) return 'hidden';
+      if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return 'hidden';
+      if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'flat';
       const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return false;
-      return true;
+      if (r.width < 1 || r.height < 1) return 'flat';
+      return 'shown';
     };
+    const shown = (el) => visibilityOf(el) !== 'hidden';
 
     const roleOf = (el) => {
       const explicit = el.getAttribute('role');

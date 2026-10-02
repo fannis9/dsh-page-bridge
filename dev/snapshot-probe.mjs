@@ -66,6 +66,8 @@ const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
     <img alt="示例图" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
     <div style="display:none"><button>隐藏按钮</button></div>
     <my-widget id="widget"></my-widget>
+    <div style="display:contents"><button>扁平容器里的按钮</button></div>
+    <div style="visibility:hidden"><button style="visibility:visible">复活按钮</button></div>
   </main>
   <footer>© 2026 测试页脚</footer>
   <script>
@@ -102,19 +104,30 @@ try {
   console.log('=== 统计 ===');
   console.log(JSON.stringify({ title: result.title, url: result.url, nodes: result.nodes, refs: result.refs, truncated: result.truncated }, null, 2));
 
-  // Shadow DOM 穿透自检：夹具里的 <my-widget> 把按钮放在 shadow root 里
+  // 两类"隐形容器"自检：shadow root（穿透）与 display:contents（自身 0×0 但子树可见）
   if (!selector) {
-    const shadow = await page.evaluate(`(() => {
+    const hidden = await page.evaluate(`(() => {
       ${builder}
-      const inYaml = (${JSON.stringify(result.yaml)}).includes('影子按钮');
-      const found = deepQueryAll('button').filter((el) => (el.innerText || '').includes('影子按钮')).length;
-      const plainQsa = document.querySelectorAll('button').length;
-      return { inYaml, deepFound: found, plainQsa };
+      const yaml = ${JSON.stringify(result.yaml)};
+      const flat = document.querySelector('div[style*="contents"]');
+      const rect = flat ? flat.getBoundingClientRect() : null;
+      return {
+        shadowInYaml: yaml.includes('影子按钮'),
+        flatInYaml: yaml.includes('扁平容器里的按钮'),
+        reviveInYaml: yaml.includes('复活按钮'),
+        hiddenInYaml: yaml.includes('隐藏按钮'),
+        flatRect: rect ? Math.round(rect.width) + 'x' + Math.round(rect.height) : 'n/a',
+        deepShadow: deepQueryAll('button').filter((el) => (el.innerText || '').includes('影子按钮')).length,
+        plainQsa: document.querySelectorAll('button').length,
+      };
     })()`);
-    console.log('=== shadow DOM 穿透自检 ===');
-    console.log(`  快照里能看到 shadow 里的按钮 : ${shadow.inYaml ? '✅' : '❌'}`);
-    console.log(`  deepQueryAll 找到它           : ${shadow.deepFound > 0 ? '✅' : '❌'}`);
-    console.log(`  普通 querySelectorAll 的 button 数（应少于总数，证明确实隔着 shadow）: ${shadow.plainQsa}`);
+    console.log('=== 隐形容器自检 ===');
+    console.log(`  shadow root 里的按钮进快照     : ${hidden.shadowInYaml ? '✅' : '❌'}`);
+    console.log(`  display:contents 里的按钮进快照: ${hidden.flatInYaml ? '✅' : '❌'}（该容器自身 rect = ${hidden.flatRect}）`);
+    console.log(`  visibility:hidden 里被后代翻盘的按钮: ${hidden.reviveInYaml ? '✅' : '❌'}`);
+    console.log(`  display:none 里的按钮仍应被排除    : ${hidden.hiddenInYaml ? '❌ 混进来了' : '✅ 正确排除'}`);
+    console.log(`  deepQueryAll 找到影子按钮       : ${hidden.deepShadow > 0 ? '✅' : '❌'}`);
+    console.log(`  普通 querySelectorAll 的 button 数（少于总数即证明隔着 shadow）: ${hidden.plainQsa}`);
   }
 
   if (showRefs) {

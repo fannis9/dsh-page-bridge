@@ -258,10 +258,14 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 - **可以只抓一块区域**：`page_snapshot {selector:"#user-repositories-list"}`（CLI：`snapshot --selector form`）
   只返回该 CSS 选择器命中的子树——GitHub 这类巨型页面用它能把噪声从几百个节点降到十几个。
   选择器不存在会明确报错，不会静默返回整页。
-- **能穿透 shadow DOM**：快照、`selector`、`text=` 与 `count` 都会走进每一层 open shadow root。
-  现代 UI（GitHub 的对话框/菜单、各种 web component）常把控件藏在里面，普通 `querySelectorAll`
-  和 `el.children` 是看不到的——这正是"对话框明明在屏幕上、快照里却什么都没有"的原因。
-  夹具自检：`dev/snapshot-probe.mjs` 会造一个影子控件并断言快照里能看到它。
+- **能看穿"隐形容器"**：快照、`selector`、`text=`、`count` 都会走进这些容器，而不是把整棵子树剪掉：
+  1. **open shadow root**（web component；顺带一提，翻译类扩展也会往页面里注入 shadow root）；
+  2. **`display: contents`**：自身 `getBoundingClientRect()` 是 0×0，但子节点正常布局——
+     GitHub 的对话框就藏在 `<dialog-helper>` 里，栽在这上面会让"对话框明明在屏幕上、快照里什么都没有"；
+  3. **`visibility: hidden` 的祖先 + 后代 `visibility: visible` 翻盘**（CSS 允许，`display:none` 不行）。
+
+  反例保留：`display: none` / `opacity: 0` / `aria-hidden` 里的内容依然会被正确排除。
+  自检：`dev/snapshot-probe.mjs` 的夹具同时造了这三类容器**和**一个反例（见输出里的「隐形容器自检」）。
 - **截图要窗口在前台**：`page_screenshot` 会先检查目标窗口是否聚焦/最小化，不在前台就**立刻**报错
   （`captureVisibleTab` 在后台窗口上会卡住）；MCP 侧超时也收紧到 15 秒。只要读内容就别用截图。
 - 快照算法在扩展里（`extension/background.js` 的 `#region aria-snapshot` 区块），自包含以便注入；
