@@ -6,6 +6,11 @@
 不用重开浏览器、不换 profile、不动用调试端口：装一个扩展，它把**你正在看的标签页**按需交给本机
 的 DSH Agent。
 
+<img src="docs/popup-preview.png" alt="扩展弹窗：连接状态、正在共享的标签页、完全接管开关、域名策略" width="340">
+
+<sub>扩展弹窗（`dev/make-popup-preview.mjs` 可重新生成）：连接状态走的是 native messaging；
+「共享当前标签页」是窄模式的入口，「完全接管」则放开到任意标签页。</sub>
+
 ```
    你的 Chrome（照常用，登录态都在）
         │  WebSocket  ws://127.0.0.1:8799/ws   （扩展主动外连，所以不需要任何端口/权限）
@@ -30,6 +35,7 @@
   - `sw-load-test.mjs` 用假 `chrome` API 加载 service worker（查模块级崩溃 + 传输状态机 5 个场景）
   - `chrome-extension-state.mjs` / `chrome-storage-scan.mjs` Chrome 侧扩展状态与存储诊断
   - `extension-id-test.mjs` 按 Chromium 算法算出扩展 ID，并比对 Chrome/Edge 两份 native 清单
+  - `make-popup-preview.mjs` 重新渲染 `docs/popup-preview.png`（假 `chrome` API 喂状态，headless 截图）
   - `native-e2e-test.mjs` 真实浏览器端到端（⚠️ 官方 Chrome 137+ 与 Edge 154 都移除了
     `--load-extension`，会直接 SKIP；需 Chromium / Chrome for Testing）
 - 运行期产物：`var/`（`events.jsonl` 轨迹、`shots/` 截图）——**可随时清空**
