@@ -189,10 +189,11 @@ function PAGE_OP(payload) {
   // Target resolution shared by every action: snapshot refs first, then text=, then CSS.
   // Refs look like "@e12", "e12", "ref=e12" or "[ref=e12]" (borrowed from BrowserMCP/Playwright).
   const REF = /^(?:@|ref=|\[ref=)?(e\d+)\]?$/i;
-  const byRef = (ref) => document.querySelector(`[data-dsh-ref="${ref}"]`);
+  const byRef = (ref) => deepQuery(`[data-dsh-ref="${ref}"]`);
   const byText = (needle) => {
     const wanted = needle.trim().toLowerCase();
-    const nodes = [...document.querySelectorAll('a,button,[role="button"],input,label,li,td,th,h1,h2,h3,p,span,div')];
+    // Shadow-DOM aware: GitHub & friends hide menu items and dialog buttons in shadow roots.
+    const nodes = deepQueryAll('a,button,[role="button"],[role="menuitem"],input,label,li,td,th,h1,h2,h3,p,span,div');
     return nodes.find((el) => (el.innerText ?? '').trim().toLowerCase() === wanted)
       ?? nodes.find((el) => (el.innerText ?? '').toLowerCase().includes(wanted))
       ?? null;
@@ -203,11 +204,37 @@ function PAGE_OP(payload) {
     const ref = REF.exec(raw);
     if (ref) return byRef(ref[1]);
     if (raw.startsWith('text=')) return byText(raw.slice(5));
-    try { return document.querySelector(raw); } catch { return null; }
+    return deepQuery(raw);
   };
   const describe = (el) => ({ tag: el.tagName.toLowerCase(), text: clean(el.innerText ?? el.value ?? '').slice(0, 160) });
 
   // #region aria-snapshot
+  /**
+   * Shadow-DOM-aware queries. Modern UIs (GitHub's dialogs, many web components) render
+   * interactive controls inside shadow roots, where plain querySelectorAll cannot see them
+   * and el.children looks empty — that is exactly how a dialog can be "on screen but
+   * invisible to the snapshot". These helpers walk every open shadow root instead.
+   * Kept inside this region so the extracted snippet stays self-contained.
+   */
+  const deepRoots = (root = document) => {
+    const roots = [root];
+    const walk = (node) => {
+      for (const el of node.querySelectorAll('*')) {
+        if (el.shadowRoot) { roots.push(el.shadowRoot); walk(el.shadowRoot); }
+      }
+    };
+    try { walk(root); } catch { /* ignore */ }
+    return roots;
+  };
+  const deepQueryAll = (selector, root = document) => {
+    const found = [];
+    for (const scope of deepRoots(root)) {
+      try { found.push(...scope.querySelectorAll(selector)); } catch { return found; }
+    }
+    return found;
+  };
+  const deepQuery = (selector, root = document) => deepQueryAll(selector, root)[0] ?? null;
+
   /**
    * Playwright-style ARIA snapshot, self-contained because it is injected into the page.
    * Marks targetable nodes with data-dsh-ref="eN" so later actions can address them as "@eN".
@@ -221,7 +248,7 @@ function PAGE_OP(payload) {
     const maxRefs = opts.maxRefs || 200;
     const maxName = opts.maxName || 120;
 
-    document.querySelectorAll('[data-dsh-ref]').forEach((el) => el.removeAttribute('data-dsh-ref'));
+    deepQueryAll('[data-dsh-ref]').forEach((el) => el.removeAttribute('data-dsh-ref'));
 
     const ROLE = {
       a: 'link', area: 'link', button: 'button', textarea: 'textbox', select: 'combobox',
@@ -361,7 +388,10 @@ function PAGE_OP(payload) {
         el.setAttribute('data-dsh-ref', ref);
       }
 
-      const children = [...el.children].filter((c) => !SKIP.has(c.tagName.toLowerCase()) && shown(c));
+      // Composed tree: when a custom element has a shadow root, that is what actually
+      // renders, so descend into it instead of the (often empty) light DOM.
+      const childNodes = el.shadowRoot ? [...el.shadowRoot.children] : [...el.children];
+      const children = childNodes.filter((c) => !SKIP.has(c.tagName.toLowerCase()) && shown(c));
       const namingOnly = TRANSPARENT_TAGS.has(tag) && !el.hasAttribute('data-dsh-ref');
       const structural = Boolean(role) && ALWAYS_EMIT.has(role) && children.length > 0;
       const emit = !namingOnly && Boolean(role)
@@ -402,7 +432,7 @@ function PAGE_OP(payload) {
   if (k === 'snapshot') {
     let root = null;
     if (args.selector) {
-      try { root = document.querySelector(args.selector); } catch { root = null; }
+      root = deepQuery(args.selector);
       if (!root) return { ok: false, reason: `找不到元素：${args.selector}` };
     }
     return buildAriaSnapshot({
@@ -420,9 +450,9 @@ function PAGE_OP(payload) {
       title: document.title,
       lang: document.documentElement.lang || undefined,
       selection: clean(String(getSelection() ?? '')).slice(0, 2000) || undefined,
-      headings: [...document.querySelectorAll('h1,h2,h3')].filter(visible).slice(0, args.maxHeadings ?? 40)
+      headings: deepQueryAll('h1,h2,h3').filter(visible).slice(0, args.maxHeadings ?? 40)
         .map((el) => ({ level: Number(el.tagName.slice(1)), text: clean(el.innerText).slice(0, 200) })),
-      forms: [...document.querySelectorAll('form,input,textarea,select,button')].filter(visible).slice(0, args.maxForms ?? 60)
+      forms: deepQueryAll('form,input,textarea,select,button').filter(visible).slice(0, args.maxForms ?? 60)
         .map((el) => ({
           tag: el.tagName.toLowerCase(),
           type: el.getAttribute('type') ?? undefined,
@@ -443,7 +473,16 @@ function PAGE_OP(payload) {
   }
 
   if (k === 'html') {
-    const html = document.documentElement.outerHTML;
+    // outerHTML does not include shadow content, so append any shadow roots found — that is
+    // usually where the interesting markup lives on component-heavy sites.
+    let html = document.documentElement.outerHTML;
+    const shadowParts = [];
+    for (const root of deepRoots()) {
+      if (root === document) continue;
+      const host = root.host;
+      shadowParts.push(`<!-- shadow of <${host?.tagName?.toLowerCase() ?? '?'}> -->\n${root.innerHTML}`);
+    }
+    if (shadowParts.length) html += `\n<!-- ===== shadow roots (${shadowParts.length}) ===== -->\n${shadowParts.join('\n')}`;
     return { url: location.href, length: html.length, html: html.slice(0, args.max ?? 60000) };
   }
 
@@ -544,7 +583,7 @@ function PAGE_OP(payload) {
   }
 
   if (k === 'count') {
-    try { return { ok: true, count: document.querySelectorAll(args.selector).length }; }
+    try { return { ok: true, count: deepQueryAll(args.selector).length }; }
     catch (error) { return { ok: false, reason: String(error?.message ?? error) }; }
   }
 

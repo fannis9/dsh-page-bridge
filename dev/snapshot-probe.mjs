@@ -65,8 +65,16 @@ const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
     <ul><li>第一项</li><li>第二项</li></ul>
     <img alt="示例图" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
     <div style="display:none"><button>隐藏按钮</button></div>
+    <my-widget id="widget"></my-widget>
   </main>
   <footer>© 2026 测试页脚</footer>
+  <script>
+    // Shadow DOM 夹具：现代 UI（GitHub 的对话框等）把控件放在 shadow root 里，
+    // 普通 querySelectorAll / el.children 都看不到，必须穿透。
+    const root = document.getElementById('widget').attachShadow({ mode: 'open' });
+    root.innerHTML = '<section><h3>影子标题</h3><button>影子按钮</button>'
+      + '<input placeholder="影子输入框"></section>';
+  </script>
 </body></html>`;
 
 const browser = await chromium.launch({ executablePath: CHROME, headless: true });
@@ -79,7 +87,8 @@ try {
   const result = await page.evaluate(`(() => {
     ${builder}
     const wanted = ${JSON.stringify(selector)};
-    const root = wanted ? document.querySelector(wanted) : null;
+    // deepQuery 来自抽出的同一段代码：选择器也要能穿透 shadow DOM
+    const root = wanted ? deepQuery(wanted) : null;
     if (wanted && !root) return { error: '找不到元素：' + wanted };
     return buildAriaSnapshot({ maxNodes: ${maxNodes}, root });
   })()`);
@@ -93,14 +102,32 @@ try {
   console.log('=== 统计 ===');
   console.log(JSON.stringify({ title: result.title, url: result.url, nodes: result.nodes, refs: result.refs, truncated: result.truncated }, null, 2));
 
+  // Shadow DOM 穿透自检：夹具里的 <my-widget> 把按钮放在 shadow root 里
+  if (!selector) {
+    const shadow = await page.evaluate(`(() => {
+      ${builder}
+      const inYaml = (${JSON.stringify(result.yaml)}).includes('影子按钮');
+      const found = deepQueryAll('button').filter((el) => (el.innerText || '').includes('影子按钮')).length;
+      const plainQsa = document.querySelectorAll('button').length;
+      return { inYaml, deepFound: found, plainQsa };
+    })()`);
+    console.log('=== shadow DOM 穿透自检 ===');
+    console.log(`  快照里能看到 shadow 里的按钮 : ${shadow.inYaml ? '✅' : '❌'}`);
+    console.log(`  deepQueryAll 找到它           : ${shadow.deepFound > 0 ? '✅' : '❌'}`);
+    console.log(`  普通 querySelectorAll 的 button 数（应少于总数，证明确实隔着 shadow）: ${shadow.plainQsa}`);
+  }
+
   if (showRefs) {
-    console.log('=== ref 解析自检 ===');
-    const resolved = await page.evaluate(() => [...document.querySelectorAll('[data-dsh-ref]')].map((el) => ({
-      ref: el.getAttribute('data-dsh-ref'),
-      tag: el.tagName.toLowerCase(),
-      text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
-      visible: el.getBoundingClientRect().width > 1,
-    })));
+    console.log('=== ref 解析自检（含 shadow 内容） ===');
+    const resolved = await page.evaluate(`(() => {
+      ${builder}
+      return deepQueryAll('[data-dsh-ref]').map((el) => ({
+        ref: el.getAttribute('data-dsh-ref'),
+        tag: el.tagName.toLowerCase(),
+        text: (el.innerText || el.value || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+        visible: el.getBoundingClientRect().width > 1,
+      }));
+    })()`);
     for (const r of resolved) console.log(`  ${r.ref.padEnd(5)} ${r.tag.padEnd(8)} visible=${r.visible} ${r.text}`);
     const bad = resolved.filter((r) => !r.visible);
     console.log(bad.length ? `⚠️ 有 ${bad.length} 个 ref 指向不可见元素` : '✅ 所有 ref 都指向可见元素');
