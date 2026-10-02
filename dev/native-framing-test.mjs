@@ -11,7 +11,7 @@
  *   node dev/native-framing-test.mjs
  */
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -85,10 +85,30 @@ function startChild(args, { piped = true } = {}) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 本地控制面的能力令牌：本测试用**独立的令牌文件**（不碰用户真实的 var/bridge-token），
+ * 两个被拉起的进程共用它，测试自己按文件内容发 Authorization 头。
+ */
+const TOKEN_FILE = `${HERE}/var/native-test-token`;
+try { rmSync(TOKEN_FILE, { force: true }); } catch { /* ignore */ }
+const tokenArgs = ['--token-file', TOKEN_FILE];
+let token = '';
+async function loadToken() {
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      const value = readFileSync(TOKEN_FILE, 'utf8').trim();
+      if (value) { token = value; return value; }
+    } catch { /* not yet */ }
+    await sleep(100);
+  }
+  return '';
+}
+const authHeaders = () => (token ? { authorization: `Bearer ${token}` } : {});
+
 async function post(port, body) {
   const res = await fetch(`http://127.0.0.1:${port}/cmd`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
   return { status: res.status, body: await res.json().catch(() => null) };
@@ -97,9 +117,10 @@ async function post(port, body) {
 /* ------------------------------------------------------------- host mode test */
 
 console.log('--- host 模式（Chrome 直接拉起 --native 桥接） ---');
-const host = startChild([`${HERE}/bridge.mjs`, '--native', '--port', String(HOST_PORT), '--log', `${HERE}/var/native-test-${HOST_PORT}.jsonl`]);
+const host = startChild([`${HERE}/bridge.mjs`, '--native', '--port', String(HOST_PORT), '--log', `${HERE}/var/native-test-${HOST_PORT}.jsonl`, ...tokenArgs]);
 const hostChannel = nativeChannel(host);
 await sleep(700);
+await loadToken();
 
 hostChannel.send({ type: 'hello', agent: 'chrome-extension', version: 'test', via: 'native' });
 const ack = await hostChannel.nextWhere((m) => m.type === 'hello-ack');
@@ -112,15 +133,15 @@ hostChannel.send({ type: 'result', id: cmdFrame?.id, ok: true, result: { pong: '
 const hostResult = await hostCmdPromise;
 check('native 回包被 HTTP 调用方收到', hostResult.body?.result?.pong === 'native-ok', JSON.stringify(hostResult.body));
 
-const status = await (await fetch(`http://127.0.0.1:${HOST_PORT}/status`)).json();
+const status = await (await fetch(`http://127.0.0.1:${HOST_PORT}/status`, { headers: authHeaders() })).json();
 check('/status 标出 native 与传输方式', status.native === true && status.clients.some((c) => c.via === 'native'), JSON.stringify(status.clients));
 
 /* ------------------------------------------------------------ relay mode test */
 
 console.log('\n--- relay 模式（端口已被按需桥接占用时降级为中继） ---');
-startChild([`${HERE}/bridge.mjs`, '--port', String(RELAY_PORT), '--log', `${HERE}/var/native-test-${RELAY_PORT}.jsonl`], { piped: false });
+startChild([`${HERE}/bridge.mjs`, '--port', String(RELAY_PORT), '--log', `${HERE}/var/native-test-${RELAY_PORT}.jsonl`, ...tokenArgs], { piped: false });
 await sleep(700);
-const relay = startChild([`${HERE}/bridge.mjs`, '--native', '--port', String(RELAY_PORT), '--log', `${HERE}/var/native-test-${RELAY_PORT}.jsonl`]);
+const relay = startChild([`${HERE}/bridge.mjs`, '--native', '--port', String(RELAY_PORT), '--log', `${HERE}/var/native-test-${RELAY_PORT}.jsonl`, ...tokenArgs]);
 const relayChannel = nativeChannel(relay);
 await sleep(900);
 
@@ -137,5 +158,6 @@ check('中继回包到达 HTTP 调用方', relayResult.body?.result?.viaRelay ==
 
 for (const child of children) { try { child.kill(); } catch { /* ignore */ } }
 for (const port of [HOST_PORT, RELAY_PORT]) rmSync(`${HERE}/var/native-test-${port}.jsonl`, { force: true });
+rmSync(TOKEN_FILE, { force: true });
 console.log(`\n${failures ? `✗ ${failures} 个断言失败` : '✓ 全部通过'}`);
 process.exit(failures ? 1 : 0);

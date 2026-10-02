@@ -37,6 +37,8 @@
   - `extension-id-test.mjs` 按 Chromium 算法算出扩展 ID，并比对 Chrome/Edge 两份 native 清单
   - `make-popup-preview.mjs` 重新渲染 `docs/popup-preview.png`（假 `chrome` API 喂状态，headless 截图）
   - `key-dispatch-test.mjs` 合成按键测试（真浏览器；验证 keyCode/which 与「回车提交」路径，含反例）
+  - `bridge-auth-test.mjs` 能力令牌与 relay 失败关闭（**不需要浏览器，进 CI**）
+  - `target-resolve-test.mjs` 执行层目标复核：被隐藏 / 被改写 / 签名被删 / 节点被移除（真浏览器）
   - `native-e2e-test.mjs` 真实浏览器端到端（⚠️ 官方 Chrome 137+ 与 Edge 154 都移除了
     `--load-extension`，会直接 SKIP；需 Chromium / Chrome for Testing）
 - 运行期产物：`var/`（`events.jsonl` 轨迹、`shots/` 截图）——**可随时清空**
@@ -114,6 +116,9 @@ node page.mjs eval "document.title"  # 执行任意 JS（--world MAIN 可读页�
 node page.mjs click "text=登录"       # 按 CSS 选择器或 text= 文本点击
 node page.mjs type "#q" "关键词"      # 输入（--submit 顺带回车提交）
 node page.mjs key Enter "#q"          # 合成按键（带 keyCode；支持 Backspace/ArrowDown 等，--repeat N）
+node page.mjs token                   # 打印本地控制面能力令牌（纯 WS 模式要粘进扩展弹窗）
+node page.mjs text --tail 3000        # 只取正文末尾（读对话页最新回复很方便）
+node page.mjs type "#q" --file a.md   # 长文本从文件读，避开 shell 引号与命令行长度限制
 node page.mjs select "#city" "杭州"
 node page.mjs scroll "#price"        # 或 --by 800
 node page.mjs highlight "#total"     # 在页面上高亮某元素 2.5 秒（你能看见）
@@ -366,6 +371,32 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 未摘录其源码，故不附带其源码副本；若将来要直接摘录其中代码，需按对应许可保留版权声明与 NOTICE。
 （另：DSH 自带的 `@playwright/mcp` provider 提供 `mcp__playwright-mcp__*` 那 24 个工具，
 与 Page Bridge 是**两条独立通路**，不属本项目范围。）
+
+## 安全模型（外部代码评审后收紧）
+
+做过一次外部代码评审，结论是"架构不用推翻，安全模型需要重新收紧"。据此改了四处：
+
+1. **本地控制面要令牌**：`127.0.0.1` 不是信任边界（本机任何进程都能连回环端口）。桥接首次启动生成
+   `var/bridge-token`，此后**所有 HTTP 与 WS 握手都要出示**它（`Authorization: Bearer <token>`；
+   WS 用 `?token=`，因为浏览器无法在 WS 握手里加自定义头）。令牌只经**可信通道**下发给扩展：
+   Chrome 拉起的 native 通道（`allowed_origins` 保证只有本扩展能启动宿主），或握手里已出示过令牌的 WS。
+   端口被别人抢占时 native host **失败关闭**：拒绝 relay、打日志、退出，绝不把 Chrome 认证过的通道交出去。
+   `node page.mjs token` 打印令牌；纯 WS 模式需要在弹窗里粘贴一次。
+2. **特权设置只认弹窗**：`setFullAccess` / `setPolicy` / `setEnabled` / `share` / `unshare` /
+   `setTransport` / `setWsToken` / `push` 都校验 `sender.url` 是 `popup.html`，不再依赖"目前只有 popup 在调"
+   这个约定；被拒会记成 `privileged-rejected` 事件（`page.mjs events` 可见）。
+3. **执行层复核目标（堵 TOCTOU）**：每个作用于元素的动作（click / type / select / key）执行前重新验证——
+   元素还在文档里、现在仍可见、ref 的签名（role + 文本，快照时写进 `data-dsh-sig`）仍与快照时一致；
+   签名被页面删掉按**失败**处理（fail closed）。于是"不可见就不给 ref"这条承诺，从渲染时刻延伸到了动作时刻。
+4. **窄授权 = origin 级委托**：共享一个标签页等于共享那个 **origin**，而不是"这个标签页可以去任何地方"。
+   - `navigate` 跨 origin **事前拒绝**（同 origin 的 SPA 路由照常），黑名单目标始终拒绝；
+   - `open` 在窄授权下只允许同 origin；
+   - **MAIN world 的 `eval` 在窄授权下禁用**（它是任意 JS 能力，`location.href = ...` / `window.open(...)`
+     会绕过上面两条）；需要时用 `--world ISOLATED`，或先开「完全接管」。
+
+**语义边界（写清楚，免得误解）**：域名黑名单约束的是 **agent 的操作**，不是"页面永远不会发出请求"——
+`page_click` 点到链接、页面自己的 form submit 都可能产生导航。要做到后者需要浏览器级网络策略，
+那是另一层工程，目前不做（这条判断也来自评审本身）。
 
 ## 自检与 CI
 

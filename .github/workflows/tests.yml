@@ -29,8 +29,11 @@ jobs:
       - name: 权限策略单测（26 个断言，含后缀伪装用例）
         run: node dev/grant-policy-test.mjs
 
-      - name: service worker 状态机（假 chrome API，11 个场景）
+      - name: service worker 状态机（假 chrome API，11 个场景 + 提权守卫 + origin 隔离）
         run: node dev/sw-load-test.mjs
+
+      - name: 本地控制面能力令牌（HTTP/WS 认证 + relay 失败关闭）
+        run: node dev/bridge-auth-test.mjs
 
       - name: native messaging 帧往返（host 模式 + relay 模式）
         run: node dev/native-framing-test.mjs

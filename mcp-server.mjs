@@ -10,7 +10,7 @@
  */
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -24,13 +24,33 @@ const log = (...args) => console.error('[page-bridge-mcp]', ...args);
 
 /* ------------------------------------------------------------ bridge control */
 
+const TOKEN_FILE = process.env.PAGE_BRIDGE_TOKEN_FILE ?? join(HERE, 'var', 'bridge-token');
+let tokenCache = null;
+/**
+ * 本地控制面的能力令牌（桥接首次启动时生成于 var/bridge-token）。
+ * 回环端口不是信任边界：没有令牌的本地进程不该能驱动用户的浏览器。
+ */
+function bridgeToken(force = false) {
+  if (tokenCache && !force) return tokenCache;
+  try { tokenCache = readFileSync(TOKEN_FILE, 'utf8').trim() || tokenCache; } catch { /* 桥接还没起过 */ }
+  return tokenCache;
+}
+
 async function bridgeAlive(timeoutMs = 900) {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    const res = await fetch(`${BASE}/status`, { signal: ctl.signal });
+    const token = bridgeToken(true);
+    const res = await fetch(`${BASE}/status`, {
+      signal: ctl.signal,
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    });
     clearTimeout(timer);
-    return res.ok;
+    if (res.status === 401) {
+      log('桥接返回 401：能力令牌不匹配，可能有旧桥接进程占着端口');
+      return true;
+    }
+    return res.status === 200;
   } catch {
     return false;
   }
@@ -62,7 +82,12 @@ async function request(path, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${BASE}${path}`, { ...init, signal: ctl.signal });
+    const token = bridgeToken();
+    const res = await fetch(`${BASE}${path}`, {
+      ...init,
+      signal: ctl.signal,
+      headers: { ...(init.headers ?? {}), ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    });
     return { status: res.status, body: await res.json().catch(() => null) };
   } finally {
     clearTimeout(timer);

@@ -25,7 +25,7 @@
  */
 import { createServer, request as httpRequest } from 'node:http';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,6 +43,41 @@ const NATIVE = Boolean(flag('native', false));
 const PORT = Number(flag('port', process.env.PAGE_BRIDGE_PORT ?? 8799));
 const HOST = '127.0.0.1';
 const LOG_FILE = flag('log', join(here, 'var', 'events.jsonl'));
+/**
+ * 本地控制面的能力令牌（capability token）。
+ *
+ * 127.0.0.1 不是信任边界：本机任何进程都能连回环端口。所以每一次 HTTP 调用、每一次 WS 握手
+ * 都必须带上这个令牌。令牌放在桥接目录旁的 var/ 里（同一个用户的工具 page.mjs / mcp-server.mjs
+ * 能读），这也正是"抢占端口的人读不到"的东西——relay 因此不会把扩展的 native 通道交给陌生人。
+ */
+const TOKEN_FILE = String(flag('token-file', process.env.PAGE_BRIDGE_TOKEN_FILE ?? join(here, 'var', 'bridge-token')));
+
+function loadToken() {
+  const explicit = flag('token', process.env.PAGE_BRIDGE_TOKEN ?? null);
+  if (explicit && explicit !== true) return String(explicit);
+  try {
+    const existing = readFileSync(TOKEN_FILE, 'utf8').trim();
+    if (existing) return existing;
+  } catch { /* 还没生成过 */ }
+  const fresh = randomBytes(32).toString('hex');
+  try {
+    mkdirSync(dirname(TOKEN_FILE), { recursive: true });
+    writeFileSync(TOKEN_FILE, `${fresh}\n`, { mode: 0o600 });
+  } catch { /* 写不了就只在内存里用 */ }
+  return fresh;
+}
+
+const TOKEN = loadToken();
+const tokenFromRequest = (req, url) => {
+  const header = req.headers.authorization;
+  if (typeof header === 'string' && header.startsWith('Bearer ')) return header.slice(7).trim();
+  const custom = req.headers['x-bridge-token'];
+  if (typeof custom === 'string' && custom) return custom.trim();
+  return url.searchParams.get('token');
+};
+const tokenMatches = (req, url) => tokenFromRequest(req, url) === TOKEN;
+const AUTH_HINT = 'unauthorized：本地控制面需要能力令牌（Authorization: Bearer <token>；WS 用 ?token=）。'
+  + '令牌文件由桥接自动生成，也可用 node page.mjs token 查看。';
 const MAX_EVENTS = 500;
 /** Exit after this many minutes without any traffic (0 = never). On-demand startup. */
 const IDLE_EXIT_MINUTES = NATIVE ? 0 : Number(flag('idle-exit', process.env.PAGE_BRIDGE_IDLE_MINUTES ?? 30));
@@ -239,7 +274,10 @@ function handleMessage(client, msg) {
     // browser-side transport too: /status should say "native" even in relay mode.
     if (msg.via === 'native' && client.via === 'ws') client.via = 'native-relay';
     log(`hello from ${client.label}${client.browser ? ` (${client.browser})` : ''} via ${client.via} v${msg.version ?? '?'}`);
-    sendTo(client, { type: 'hello-ack', server: 'dsh-page-bridge', via: client.via });
+    // 令牌只发给"身份可信"的通道：直接由 Chrome 拉起的 native 通道，或握手时出示过令牌的 WS。
+    // 攻击者即使抢占端口/连上 WS，也拿不到它，因此无法把扩展骗到自己的通道上。
+    const trusted = client.via === 'native' || client.trusted === true;
+    sendTo(client, { type: 'hello-ack', server: 'dsh-page-bridge', via: client.via, ...(trusted ? { token: TOKEN } : {}) });
     return;
   }
   if (msg.type === 'ping') { sendTo(client, { type: 'pong', t: msg.t }); return; }
@@ -305,6 +343,13 @@ const readBody = (req) => new Promise((resolve, reject) => {
 const server = createServer(async (req, res) => {
   touch();
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? `${HOST}:${PORT}`}`);
+
+  // 认证先于一切：回环端口对本机所有进程可见，没有令牌就什么都不给。
+  if (!tokenMatches(req, url)) {
+    log(`http ${req.method} ${url.pathname} rejected (bad or missing token)`);
+    json(res, 401, { ok: false, error: AUTH_HINT });
+    return;
+  }
 
   if (url.pathname === '/shutdown' && req.method === 'POST') {
     json(res, 200, { ok: true, stopping: true });
@@ -385,6 +430,12 @@ server.on('upgrade', (req, socket) => {
     socket.destroy();
     return;
   }
+  if (!tokenMatches(req, url)) {
+    log('ws handshake rejected (bad or missing token)');
+    try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { /* ignore */ }
+    socket.destroy();
+    return;
+  }
   socket.write([
     'HTTP/1.1 101 Switching Protocols',
     'Upgrade: websocket',
@@ -397,6 +448,7 @@ server.on('upgrade', (req, socket) => {
   const client = {
     label: 'unknown',
     via: 'ws',
+    trusted: true,   // 走到这里说明 WS 握手出示过能力令牌
     connectedAt: Date.now(),
     send: (data) => { socket.write(encodeText(JSON.stringify(data))); },
     close: () => {
@@ -465,7 +517,7 @@ function startRelay() {
   const handshake = httpRequest({
     host: HOST,
     port: PORT,
-    path: '/ws',
+    path: `/ws?token=${encodeURIComponent(TOKEN)}`,
     headers: {
       connection: 'Upgrade',
       upgrade: 'websocket',
@@ -492,6 +544,11 @@ function startRelay() {
     socket.on('close', () => stop('bridge closed'));
     socket.on('error', () => stop('socket error'));
     process.stdin.resume();
+  });
+  handshake.on('response', (res) => {
+    // 端口被别人占着，而且对方拿不出令牌 —— 绝不把 native 通道交给它。
+    log(`relay refused by the port owner (HTTP ${res.statusCode}); native messaging stays on Chrome's authenticated channel only`);
+    process.exit(1);
   });
   handshake.on('error', (error) => {
     log(`relay handshake failed: ${error.message}`);

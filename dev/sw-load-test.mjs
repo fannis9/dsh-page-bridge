@@ -89,7 +89,10 @@ function makePlatform() {
     tabs: {
       query: async () => [{ id: 11, windowId: 1, active: true, url: chrome.tabUrl, title: 'Example' }],
       get: async (id) => ({ id, windowId: 1, active: true, url: chrome.tabUrl, title: 'Example', status: 'complete' }),
-      update: async (id) => ({ id, windowId: 1, url: chrome.tabUrl, active: true, status: 'complete' }),
+      update: async (id, props) => {
+      chrome.calls.push({ fn: 'tabs.update', id, url: props?.url });
+      return { id, windowId: 1, url: props?.url ?? chrome.tabUrl, active: true, status: 'complete' };
+    },
       create: async ({ url, active }) => {
         chrome.calls.push({ fn: 'tabs.create', url, active });
         return { id: 99, windowId: 1, url, title: '', active: active !== false };
@@ -106,6 +109,8 @@ function makePlatform() {
     alarms: { create: () => {}, onAlarm: makeEvent() },
     runtime: {
       lastError: null,
+      id: 'abcdefghijklmnopabcdefghijklmnop',
+      getURL: (p) => `chrome-extension://abcdefghijklmnopabcdefghijklmnop/${p}`,
       getManifest: () => ({ version: '0.0.0-test' }),
       onMessage: makeEvent(),
       onStartup: makeEvent(),
@@ -131,6 +136,11 @@ function makePlatform() {
 }
 
 const CHROME_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36';
+
+/** popup 的身份；另一个模拟"注入脚本所在页面"的来源，用来验证提权守卫 */
+const EXT_ID = 'abcdefghijklmnopabcdefghijklmnop';
+const POPUP_SENDER = { id: EXT_ID, url: `chrome-extension://${EXT_ID}/popup.html` };
+const ISOLATED_SENDER = { id: EXT_ID, url: 'https://example.com/' };
 const EDGE_UA = `${CHROME_UA} Edg/154.0.4258.48`;
 
 /** Load background.js in a fresh context with a fake platform. */
@@ -193,17 +203,34 @@ check('错误文案可操作（提示去共享）', /共享/.test(denied?.error 
 
 /* ------------------------------------------------------------------- test 4 */
 
-console.log('\n--- 4. 宿主从不应答：探测超时 → WebSocket 回退 ---');
+console.log('\n--- 4. 宿主从不应答：探测超时 → 但没有令牌时不连 WS ---');
 const silent = await loadWorker();
 const silentPort = silent.chrome.ports.at(-1);
 check('已尝试 native', Boolean(silentPort));
 await sleep(1200);                                  // probe window is 900ms
 check('探测超时后主动断开端口', silentPort.disconnected === true, JSON.stringify(silentPort));
-check('已建立 WebSocket 连接', silent.FakeWebSocket.instances.length > 0, `instances=${silent.FakeWebSocket.instances.length}`);
+check('没有令牌就不建 WebSocket（回环端口不是信任边界）',
+  silent.FakeWebSocket.instances.length === 0, `instances=${silent.FakeWebSocket.instances.length}`);
+const noTokenStatus = await silent.status();
+check('把可操作的提示留在 lastError 里',
+  /令牌/.test(noTokenStatus?.lastError ?? ''), JSON.stringify(noTokenStatus?.lastError));
+
+console.log('\n--- 4b. 用户粘贴令牌后，WS 回退应当成功（正向对照） ---');
+const setTok = await new Promise((resolve) => {
+  silent.chrome.runtime.onMessage.fire({ kind: 'setWsToken', token: 'test-token-1234567890' }, POPUP_SENDER, resolve);
+});
+check('popup 可以设置 WS 令牌', setTok?.ok === true && setTok?.hasToken === true, JSON.stringify(setTok));
+await sleep(1200);
+check('拿到令牌后建立了 WebSocket', silent.FakeWebSocket.instances.length > 0, `instances=${silent.FakeWebSocket.instances.length}`);
+check('WS URL 里带上了令牌', /token=test-token-1234567890/.test(silent.FakeWebSocket.instances.at(-1)?.url ?? ''),
+  String(silent.FakeWebSocket.instances.at(-1)?.url));
 silent.FakeWebSocket.instances.at(-1)?.open();
 await sleep(60);
 status = await silent.status();
 check('activeTransport = ws（回退成功）', status?.activeTransport === 'ws', JSON.stringify(status));
+check('isolated-world 不能设置令牌（特权设置）', (await new Promise((resolve) => {
+  silent.chrome.runtime.onMessage.fire({ kind: 'setWsToken', token: 'evil' }, ISOLATED_SENDER, resolve);
+}))?.ok === false);
 
 /* ------------------------------------------------------------------- test 5 */
 
@@ -218,9 +245,9 @@ check('没有回退到 WebSocket', worker.FakeWebSocket.instances.length === wsB
   `instances ${wsBefore} → ${worker.FakeWebSocket.instances.length}`);
 
 console.log('\n--- 6. 完全接管：无需共享即可操作任意标签页 ---');
-const say = (kind, payload) => new Promise((resolve) => {
+const say = (kind, payload, sender = POPUP_SENDER) => new Promise((resolve) => {
   let done = false;
-  worker.chrome.runtime.onMessage.fire({ kind, ...payload }, {}, (reply) => { done = true; resolve(reply); });
+  worker.chrome.runtime.onMessage.fire({ kind, ...payload }, sender, (reply) => { done = true; resolve(reply); });
   setTimeout(() => { if (!done) resolve(null); }, 250);
 });
 const sendCmd = async (id, name, args = {}) => {
@@ -234,6 +261,25 @@ const sendCmd = async (id, name, args = {}) => {
 let reply = await say('setFullAccess', { value: true });
 check('弹窗可开启完全接管', reply?.fullAccess === true, JSON.stringify(reply));
 check('徽标变为 ALL', worker.chrome.badge === 'ALL', worker.chrome.badge);
+
+console.log('\n--- 6b. 提权守卫：只有 popup 能改特权设置 ---');
+const privBefore = (await say('status', {}))?.fullAccess;
+let deniedBySender = await say('setFullAccess', { value: false }, ISOLATED_SENDER);
+check('isolated-world 调 setFullAccess 被拒', deniedBySender?.ok === false && /forbidden/.test(deniedBySender.error ?? ''), JSON.stringify(deniedBySender));
+const privAfter = (await say('status', {}))?.fullAccess;
+check('被拒后 fullAccess 未被改动', privAfter === privBefore, `${privBefore} → ${privAfter}`);
+deniedBySender = await say('setPolicy', { blockDomains: 'evil.com' }, ISOLATED_SENDER);
+check('isolated-world 调 setPolicy 被拒', deniedBySender?.ok === false && /forbidden/.test(deniedBySender.error ?? ''), JSON.stringify(deniedBySender));
+deniedBySender = await say('share', {}, ISOLATED_SENDER);
+check('isolated-world 调 share 被拒', deniedBySender?.ok === false && /forbidden/.test(deniedBySender.error ?? ''), JSON.stringify(deniedBySender));
+const eventSink = [
+  ...worker.chrome.ports.flatMap((p) => p.sent ?? []),
+  ...worker.FakeWebSocket.instances.flatMap((w) => w.sent ?? []),
+];
+check('拒绝动作被记成事件（可观测）', eventSink.some((m) => m.type === 'event' && m.name === 'privileged-rejected'),
+  JSON.stringify(eventSink.filter((m) => m.type === 'event').slice(-3)));
+const popupStillWorks = await say('status', {}, POPUP_SENDER);
+check('popup 自己仍可正常调用（正向对照）', popupStillWorks?.fullAccess === true, JSON.stringify(popupStillWorks));
 
 let res = await sendCmd('c2', 'state');
 check('未共享也能读任意标签页', res?.ok === true, JSON.stringify(res));
@@ -260,6 +306,46 @@ console.log('\n--- 10. 关掉完全接管后回到共享模式 ---');
 await say('setFullAccess', { value: false });
 res = await sendCmd('c7', 'state');
 check('重新要求共享（回到窄模式）', res?.ok === false && /共享/.test(res.error), JSON.stringify(res));
+
+console.log('\n--- 10b. 窄授权 = origin 级委托（外部评审定的语义） ---');
+// 在 github.com 上共享一个标签页
+worker.chrome.tabUrl = 'https://github.com/fannis9/dsh-page-bridge';
+await say('share', { tabId: 11 });
+const countCalls = (fn) => worker.chrome.calls.filter((c) => c.fn === fn).length;
+const updatesBefore = countCalls('tabs.update');
+const createsBefore = countCalls('tabs.create');
+const scriptsBefore = countCalls('scripting.executeScript');
+
+res = await sendCmd('n1', 'navigate', { url: 'https://github.com/other/repo' });
+check('同 origin 导航 → 允许', res?.ok === true, JSON.stringify(res));
+check('  并真的调用了 tabs.update', countCalls('tabs.update') > updatesBefore);
+
+const updatesAfterSameOrigin = countCalls('tabs.update');
+res = await sendCmd('n2', 'navigate', { url: 'https://evil.example/steal' });
+check('跨 origin 导航 → 事前拒绝', res?.ok === false && /origin/.test(res.error), JSON.stringify(res));
+check('  且完全没有发起导航（不是事后撤销）', countCalls('tabs.update') === updatesAfterSameOrigin,
+  `update 调用数 ${updatesAfterSameOrigin} → ${countCalls('tabs.update')}`);
+
+await say('setPolicy', { blockDomains: 'blocked.com' });
+res = await sendCmd('n3', 'navigate', { url: 'https://blocked.com/login' });
+check('黑名单目标 → 拒绝（窄模式）', res?.ok === false && /黑名单/.test(res.error), JSON.stringify(res));
+
+res = await sendCmd('n4', 'open', { url: 'https://github.com/new' });
+check('同 origin 开新标签页 → 允许', res?.ok === true && res.result?.tabId === 99, JSON.stringify(res));
+check('  并真的调用了 tabs.create', countCalls('tabs.create') > createsBefore);
+const createsAfterSameOrigin = countCalls('tabs.create');
+res = await sendCmd('n5', 'open', { url: 'https://google.com/' });
+check('跨 origin 开新标签页 → 拒绝', res?.ok === false && /origin/.test(res.error), JSON.stringify(res));
+check('  且没有真的开标签页', countCalls('tabs.create') === createsAfterSameOrigin);
+
+res = await sendCmd('n6', 'eval', { code: 'location.href = "https://evil.example/"' });
+check('窄模式下 MAIN eval → 拒绝（它是任意 JS 能力）', res?.ok === false && /ISOLATED|完全接管/.test(res.error), JSON.stringify(res));
+check('  且没有注入执行', countCalls('scripting.executeScript') === scriptsBefore);
+res = await sendCmd('n7', 'eval', { code: 'document.title', world: 'ISOLATED' });
+check('窄模式下 ISOLATED eval → 允许（正向对照）', res?.ok === true, JSON.stringify(res));
+
+res = await sendCmd('n8', 'state');
+check('被拒之后共享依然有效（没有误伤）', res?.ok === true, JSON.stringify(res));
 
 console.log('\n--- 11. 浏览器识别（Chrome/Edge 同目录同 ID，需要区分） ---');
 check('Chrome UA → chrome', vm.runInContext('BROWSER_NAME', worker.context) === 'chrome',

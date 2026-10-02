@@ -12,7 +12,7 @@ function say(text, isError = false) {
 }
 
 function paint(state) {
-  const { connected, enabled, wsUrl, lastError, grant, policy, current, transport, activeTransport, nativeHost, fullAccess } = state;
+  const { connected, enabled, wsUrl, lastError, grant, policy, current, transport, activeTransport, nativeHost, fullAccess, hasWsToken } = state;
 
   $('toggle').setAttribute('aria-checked', enabled ? 'true' : 'false');
 
@@ -60,6 +60,7 @@ function paint(state) {
   } else { dot.classList.add('warn'); $('statusText').textContent = '等待桥接（DSH 用到时会自动启动）'; }
   $('endpoint').textContent = activeTransport === 'native' ? `host: ${nativeHost ?? ''}` : (wsUrl ?? '');
   if (document.activeElement !== $('transport')) $('transport').value = transport ?? 'auto';
+  if (document.activeElement !== $('wsToken')) $('wsToken').placeholder = hasWsToken ? '已保存（粘贴可覆盖）' : 'native 会自动下发';
   $('push').disabled = !enabled || !grant;
 
   // policy (don't clobber what the user is typing)
@@ -121,6 +122,14 @@ $('savePolicy').addEventListener('click', async () => {
 $('transport').addEventListener('change', async () => {
   const res = await ask({ kind: 'setTransport', transport: $('transport').value });
   say(res?.ok ? `传输方式已切换为 ${res.transport}` : `切换失败：${res?.error ?? '未知错误'}`, !res?.ok);
+  await refresh();
+});
+
+$('saveToken').addEventListener('click', async () => {
+  const res = await ask({ kind: 'setWsToken', token: $('wsToken').value });
+  say(res?.ok
+    ? (res.hasToken ? 'WS 令牌已保存，正在用它重连' : 'WS 令牌已清空（回退通道不会连接）')
+    : `保存失败：${res?.error ?? '未知错误'}`, !res?.ok);
   await refresh();
 });
 

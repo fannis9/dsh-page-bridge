@@ -20,7 +20,7 @@
  *
  * Global flags: --tab <id> --port <n> --wait <ms> (wait for the extension) --timeout <ms> --json
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -42,15 +42,41 @@ const PORT = Number(flags.port ?? process.env.PAGE_BRIDGE_PORT ?? 8799);
 const BASE = `http://127.0.0.1:${PORT}`;
 const command = rest[0];
 const BRIDGE = fileURLToPath(new URL('./bridge.mjs', import.meta.url));
+const TOKEN_FILE = String(flags['token-file'] ?? process.env.PAGE_BRIDGE_TOKEN_FILE
+  ?? fileURLToPath(new URL('./var/bridge-token', import.meta.url)));
+
+let tokenCache = null;
+/**
+ * 本地控制面的能力令牌：桥接首次启动时生成，落在 var/bridge-token。
+ * 回环端口对本机所有进程可见，所以每个请求都要带它（Authorization: Bearer）。
+ */
+function bridgeToken(force = false) {
+  if (tokenCache && !force) return tokenCache;
+  if (flags.token) tokenCache = String(flags.token);
+  else {
+    try { tokenCache = readFileSync(TOKEN_FILE, 'utf8').trim() || tokenCache; } catch { /* 桥接还没起过 */ }
+  }
+  return tokenCache;
+}
 
 /** Is the bridge listening? */
 async function bridgeAlive(timeoutMs = 900) {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
-    const res = await fetch(`${BASE}/status`, { signal: ctl.signal });
+    const token = bridgeToken(true);
+    const res = await fetch(`${BASE}/status`, {
+      signal: ctl.signal,
+      ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}),
+    });
     clearTimeout(timer);
-    return res.ok;
+    if (res.status === 401) {
+      // 令牌不匹配说明端口上是个别的桥接实例（旧令牌）。当成"已在运行"处理，
+      // 让它把 401 明确报出来，而不是又拉一个进程上来。
+      console.error('[page.mjs] 桥接返回 401：能力令牌不匹配，可能有旧桥接进程占着端口（先 node page.mjs stop）。');
+      return true;
+    }
+    return res.status === 200;
   } catch {
     return false;
   }
@@ -82,8 +108,10 @@ async function ensureBridge() {
   throw new Error(`桥接启动失败，请手动运行：node ${BRIDGE} --port ${PORT}`);
 }
 
-const call = async (path, init) => {
-  const res = await fetch(`${BASE}${path}`, init);
+const call = async (path, init = {}) => {
+  const token = bridgeToken();
+  const headers = { ...(init.headers ?? {}), ...(token ? { authorization: `Bearer ${token}` } : {}) };
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
   const text = await res.text();
   let body;
   try { body = JSON.parse(text); } catch { body = text; }
@@ -133,7 +161,7 @@ function printState(state) {
 }
 
 if (!command || command === 'help' || flags.help) {
-  console.log('commands: status | grant | tabs | state | snapshot | text | html | eval | click | type | key | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
+  console.log('commands: status | token | grant | tabs | state | snapshot | text | html | eval | click | type | key | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
   process.exit(command ? 0 : 1);
 }
 
@@ -152,7 +180,12 @@ const startedNow = await ensureBridge();
 defaultWait = startedNow ? 30_000 : 8000;
 
 try {
-  if (command === 'status') {
+  if (command === 'token') {
+  // 打印本地控制面的能力令牌（纯 WS 模式下需要把它粘进扩展弹窗）。
+  if (!bridgeToken()) await ensureBridge();
+  const tok = bridgeToken(true);
+  console.log(tok ?? '(还没生成：先跑一次 node page.mjs status)');
+} else if (command === 'status') {
     // Right after an on-demand start (or with an explicit --wait) the extension may need
     // a few seconds to reconnect — its worker can be suspended by Chrome while idle.
     if (startedNow || flags.wait) {
@@ -197,9 +230,15 @@ try {
       console.error(`[page.mjs] 节点 ${snap.nodes} / ref ${snap.refs}${snap.truncated ? ' / 已截断' : ''}`);
     }
   } else if (command === 'text') {
-    const res = await cmd('text', { max: Number(flags.max ?? 20000) });
-    console.log(res.text ?? '');
-    if (res.length > (res.text?.length ?? 0)) console.log(`\n... 已截断（原长 ${res.length} 字符，用 --max 调大）`);
+    // --tail <n>：只要正文末尾 n 个字符（对话页的"最新回复"就在末尾）。
+    // 注意：正文必须先完整取回再截尾，否则截尾截的是被前台截断过的内容。
+    const tail = Number(flags.tail ?? 0);
+    const want = tail > 0 ? Math.max(Number(flags.max ?? 0), tail + 20000) : Number(flags.max ?? 20000);
+    const res = await cmd('text', { max: want });
+    const full = res.text ?? '';
+    console.log(tail > 0 ? full.slice(-tail) : full);
+    if (res.length > full.length) console.log(`\n... 已截断（原长 ${res.length} 字符，用 --max 调大）`);
+    else if (tail > 0 && full.length > tail) console.log(`\n... 只显示末尾 ${tail} 字符（共 ${full.length} 字符）`);
   } else if (command === 'html') {
     const res = await cmd('html', { max: Number(flags.max ?? 60000) });
     console.log(res.html ?? '');
@@ -210,7 +249,9 @@ try {
   } else if (command === 'key') {
     out(await cmd('key', { key: rest[1] ?? '', selector: rest[2], repeat: Number(flags.repeat ?? 1) }));
   } else if (command === 'type') {
-    out(await cmd('type', { selector: rest[1] ?? '', text: rest[2] ?? '', submit: Boolean(flags.submit) }));
+    // --file <路径>：长文本直接从文件读，避免经过 shell 引号与命令行长度的坑
+    const text = flags.file ? readFileSync(resolve(String(flags.file)), 'utf8') : (rest[2] ?? '');
+    out(await cmd('type', { selector: rest[1] ?? '', text, submit: Boolean(flags.submit) }));
   } else if (command === 'select') {
     out(await cmd('select', { selector: rest[1] ?? '', value: rest[2] ?? '' }));
   } else if (command === 'scroll') {

@@ -8,7 +8,15 @@
  * (PAGE_OP). chrome.scripting serialises the function and runs it in the page, so it
  * must not reference anything from this worker.
  */
-const WS_URL = 'ws://127.0.0.1:8799/ws';
+/** WS 回退通道的地址；能力令牌（见下）作为查询参数带上，因为浏览器无法在 WS 握手里加自定义头。 */
+const WS_BASE = 'ws://127.0.0.1:8799/ws';
+const WS_URL = WS_BASE;
+/**
+ * 本地控制面的能力令牌。优先由 native 通道下发（native messaging 由 Chrome 保证只有本扩展能启动
+ * 宿主，是这里唯一的信任根）；纯 WS 模式下需要用户在弹窗里手动粘贴（node page.mjs token 可打印）。
+ */
+let wsToken = '';
+const wsUrl = () => (wsToken ? `${WS_BASE}?token=${encodeURIComponent(wsToken)}` : WS_BASE);
 const HEARTBEAT_MS = 20000;
 
 let socket = null;
@@ -236,6 +244,33 @@ function PAGE_OP(payload) {
   const deepQuery = (selector, root = document) => deepQueryAll(selector, root)[0] ?? null;
 
   /**
+   * Three-state visibility. The middle state matters most: some containers have no box or
+   * are themselves invisible while their **descendants** still render:
+   *   - `display: contents` → own rect is 0×0, children lay out normally
+   *     (this is what hid GitHub's dialog inside <dialog-helper>);
+   *   - `visibility: hidden` → a descendant may set `visibility: visible` and re-appear
+   *     (CSS allows it; `display: none` and `opacity: 0` cannot be undone).
+   * Pruning on the ancestor therefore drops visible content. So:
+   *   'hidden' — 后代无法翻盘（display:none / opacity:0 / hidden / aria-hidden）→ 剪掉
+   *   'flat'   — 自身不可见或没有盒子，但子树可能有可见内容 → 继续下钻，不产出节点
+   *   'shown'  — 正常可见
+   *
+   * 定义在区域作用域（而不是 buildAriaSnapshot 内部），因为**执行层也要用同一套判定**：
+   * 快照承诺"不可见不给 ref"，而动作发生时要再验一次"现在还可见吗"（TOCTOU）。
+   */
+  const visibilityOf = (el) => {
+    if (!el || el.nodeType !== 1) return 'hidden';
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || Number(st.opacity) === 0) return 'hidden';
+    if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return 'hidden';
+    if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'flat';
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return 'flat';
+    return 'shown';
+  };
+  const shown = (el) => visibilityOf(el) !== 'hidden';
+
+  /**
    * Playwright-style ARIA snapshot, self-contained because it is injected into the page.
    * Marks targetable nodes with data-dsh-ref="eN" so later actions can address them as "@eN".
    * Design borrowed from BrowserMCP (aria snapshot + refs, refreshed after every action)
@@ -290,28 +325,8 @@ function PAGE_OP(payload) {
     const cut = (s, n) => (s.length > n ? `${s.slice(0, Math.max(0, n - 1))}…` : s);
 
     /**
-     * Three-state visibility. The middle state matters most: some containers have no box or
-     * are themselves invisible while their **descendants** still render:
-     *   - `display: contents` → own rect is 0×0, children lay out normally
-     *     (this is what hid GitHub's dialog inside <dialog-helper>);
-     *   - `visibility: hidden` → a descendant may set `visibility: visible` and re-appear
-     *     (CSS allows it; `display: none` and `opacity: 0` cannot be undone).
-     * Pruning on the ancestor therefore drops visible content. So:
-     *   'hidden' — 后代无法翻盘（display:none / opacity:0 / hidden / aria-hidden）→ 剪掉
-     *   'flat'   — 自身不可见或没有盒子，但子树可能有可见内容 → 继续下钻，不产出节点
-     *   'shown'  — 正常可见
+     * visibilityOf / shown 已经提到区域作用域（执行层也要用同一套判定，见上方注释）。
      */
-    const visibilityOf = (el) => {
-      if (!el || el.nodeType !== 1) return 'hidden';
-      const st = getComputedStyle(el);
-      if (st.display === 'none' || Number(st.opacity) === 0) return 'hidden';
-      if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') return 'hidden';
-      if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'flat';
-      const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return 'flat';
-      return 'shown';
-    };
-    const shown = (el) => visibilityOf(el) !== 'hidden';
 
     const roleOf = (el) => {
       const explicit = el.getAttribute('role');
@@ -418,7 +433,14 @@ function PAGE_OP(payload) {
           ref = `e${refSeq}`;
           el.setAttribute('data-dsh-ref', ref);
         }
-        if (refs < maxRefs) refs += 1; else ref = '';   // 本次快照只广告前 maxRefs 个
+        if (refs < maxRefs) {
+          refs += 1;
+          // 每次"广告"这个 ref 时刷新签名：模型看到的就是这份签名对应的元素。
+          // 动作执行时用它比对，能发现"ref 指向的元素被替换/改写了"。
+          el.setAttribute('data-dsh-sig', targetSignature(el));
+        } else {
+          ref = '';   // 本次快照只广告前 maxRefs 个
+        }
       }
 
       // Composed tree: when a custom element has a shadow root, that is what actually
@@ -463,6 +485,55 @@ function PAGE_OP(payload) {
     };
   };
   // #endregion aria-snapshot
+
+  // #region target-resolve
+  /**
+   * 执行层的目标解析与复核（堵 TOCTOU）。
+   *
+   * 快照承诺"不可见元素不给 ref"，但那个承诺只在**渲染快照的那一刻**成立：从快照到动作之间，
+   * 页面可以把节点隐藏、替换、改写；而且 `data-dsh-ref` 只是 DOM 属性，**页面脚本自己也能改**。
+   * 所以每个"要作用于某元素"的动作都重新验一遍：
+   *   1. 元素还在文档里（isConnected）—— 否则说明被重渲染掉了；
+   *   2. 现在仍然可见（'shown'，与快照同一套三态判定）；
+   *   3. 若目标是 ref：快照时记下的签名（role + 文本）仍然匹配，否则 ref 已不代表模型看到的那个元素。
+   * 签名缺失（例如页面把属性删了）按失败处理——fail closed。
+   *
+   * 签名故意自包含（不依赖 nameOf/maxName），因为它的用途是"自己跟自己比"，一致性比称谓准确更重要。
+   */
+  const targetSignature = (el) => {
+    const role = el.getAttribute('role') ?? el.tagName.toLowerCase();
+    const text = (el.innerText ?? el.value ?? el.getAttribute('aria-label') ?? '')
+      .replace(/\s+/g, ' ').trim().slice(0, 120);
+    return `${role}|${text}`;
+  };
+
+  /** 从选择器规格里取出 ref（"e12" / "@e12" / "ref=e12"），没有则 null。 */
+  const refOf = (spec) => {
+    const m = /^@?(?:ref=)?(e\d+)$/i.exec(String(spec ?? '').trim());
+    return m ? m[1].toLowerCase() : null;
+  };
+
+  const verifyTarget = (el, ref = null) => {
+    if (!el) return { ok: false, reason: 'element not found' };
+    if (!el.isConnected) {
+      return { ok: false, reason: '目标元素已从文档中移除（页面重渲染过），请重新抓快照再操作' };
+    }
+    if (visibilityOf(el) !== 'shown') {
+      return { ok: false, reason: '目标当前不可见（被隐藏/折叠或落在不可见容器里），已拒绝操作；请重新抓快照确认' };
+    }
+    if (ref) {
+      const recorded = el.getAttribute('data-dsh-sig');
+      const now = targetSignature(el);
+      if (!recorded) {
+        return { ok: false, reason: `ref ${ref} 上没有快照签名（元素可能被页面改写过），请重新抓快照` };
+      }
+      if (recorded !== now) {
+        return { ok: false, reason: `ref ${ref} 指向的元素已经变了（快照时「${recorded}」，现在「${now}」），请重新抓快照` };
+      }
+    }
+    return { ok: true };
+  };
+  // #endregion target-resolve
 
   const k = payload.kind;
   const args = payload.args ?? {};
@@ -543,6 +614,8 @@ function PAGE_OP(payload) {
   if (k === 'click') {
     const el = find(args.selector);
     if (!el) return { ok: false, reason: 'element not found' };
+    const guard = verifyTarget(el, refOf(args.selector));
+    if (!guard.ok) return guard;
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
     const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
@@ -616,6 +689,8 @@ function PAGE_OP(payload) {
   if (k === 'type') {
     const el = find(args.selector);
     if (!el) return { ok: false, reason: 'element not found' };
+    const guard = verifyTarget(el, refOf(args.selector));
+    if (!guard.ok) return guard;
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     el.focus();
     const value = String(args.text ?? '');
@@ -641,12 +716,18 @@ function PAGE_OP(payload) {
   if (k === 'key') {
     const target = args.selector ? find(args.selector) : (document.activeElement ?? document.body);
     if (args.selector && !target) return { ok: false, reason: `找不到元素：${args.selector}` };
+    if (args.selector) {
+      const guard = verifyTarget(target, refOf(args.selector));
+      if (!guard.ok) return guard;
+    }
     return pressKey(target, args.key, args.repeat);
   }
 
   if (k === 'select') {
     const el = find(args.selector);
     if (!el) return { ok: false, reason: 'element not found' };
+    const guard = verifyTarget(el, refOf(args.selector));
+    if (!guard.ok) return guard;
     el.value = String(args.value ?? '');
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -763,7 +844,17 @@ function send(payload) {
 /** Single place that turns an inbound transport message into work (shared by both). */
 async function onTransportMessage(msg) {
   if (!msg || typeof msg !== 'object') return;
-  if (msg.type === 'pong' || msg.type === 'hello-ack') return;
+  if (msg.type === 'pong') return;
+  if (msg.type === 'hello-ack') {
+    // native 通道由 Chrome 保证"只有本扩展能启动宿主"（allowed_origins），是这里唯一的信任根；
+    // 桥接只在可信通道上下发令牌。拿到后 WS 回退也能通过握手认证。
+    if (typeof msg.token === 'string' && msg.token && msg.token !== wsToken) {
+      wsToken = msg.token;
+      void chrome.storage.local.set({ wsToken });
+      console.log('[page-bridge] capability token received over a trusted channel');
+    }
+    return;
+  }
   if (msg.type !== 'cmd') return;
   try {
     const result = await handle(msg.name, msg.args ?? {});
@@ -849,8 +940,14 @@ function onNativeUnavailable(reason) {
 
 function connectWs() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  if (!wsToken) {
+    // 没有令牌的 WS 握手一定会被桥接 401 掉。与其静默重连，不如把可操作的提示留在弹窗里。
+    lastError = 'WS 回退需要能力令牌：运行 node page.mjs token，把令牌粘贴到弹窗里（或注册 native host 让它自动下发）';
+    scheduleReconnect();
+    return;
+  }
   try {
-    socket = new WebSocket(WS_URL);
+    socket = new WebSocket(wsUrl());
   } catch (error) {
     lastError = String(error);
     scheduleReconnect();
@@ -860,7 +957,7 @@ function connectWs() {
     retryDelay = 500;
     lastError = null;
     activeTransport = 'ws';
-    console.log('[page-bridge] websocket transport connected', WS_URL);
+    console.log('[page-bridge] websocket transport connected', WS_BASE);
     paintBadge();
     send({ type: 'hello', agent: 'chrome-extension', browser: BROWSER_NAME, version: chrome.runtime.getManifest().version, via: 'ws' });
     startHeartbeat();
@@ -932,15 +1029,19 @@ async function handle(name, args) {
     };
   }
 
-  // Opening a tab needs no existing target: allowed in full access, or while a tab is
-  // shared (so the narrow mode can still branch out deliberately).
+  // Opening a tab needs no existing target: allowed in full access, or while a tab is shared.
+  // 但窄授权是 **origin 级**委托（外部评审定的语义）：共享 github.com 不等于可以打开 google.com。
   if (name === 'open') {
+    const url = String(args.url ?? 'about:blank');
+    const policy = await readPolicy();
     if (!fullAccess) {
       const grant = await readGrant();
       if (!grant) throw new Error('开新标签页需要先在弹窗里打开「完全接管」，或先共享一个标签页');
+      if (/^https?:/i.test(url) && POLICY.originOf(url) !== grant.origin) {
+        throw new Error(`窄授权只能在自己的 origin 内开新标签页（当前共享 ${grant.origin}，目标 ${POLICY.originOf(url)}）；`
+          + '要跨站请先在弹窗里打开「完全接管」');
+      }
     }
-    const url = String(args.url ?? 'about:blank');
-    const policy = await readPolicy();
     if (/^https?:/i.test(url) && !POLICY.isDomainAllowed(url, [], policy.blockDomains)) {
       throw new Error(`该域名在黑名单中，拒绝打开：${POLICY.hostOf(url)}`);
     }
@@ -981,9 +1082,17 @@ async function handle(name, args) {
       return inject(tabId, 'text', { max: args.max }, args.world);
     case 'html':
       return inject(tabId, 'html', { max: args.max }, args.world);
-    case 'eval':
-      // eval defaults to MAIN: the isolated world silently refuses eval on strict-CSP pages.
-      return inject(tabId, 'eval', { code: args.code, worldName: args.world ?? 'MAIN' }, args.world ?? 'MAIN');
+    case 'eval': {
+      // MAIN-world eval 是任意 JS 能力：在窄授权下它能让 origin 隔离当场失效
+      // （location.href = ...、window.open(...) 都绕过了 navigate/open 的检查）。
+      // 所以窄授权只允许 ISOLATED（扩展自己的世界，能读写 DOM 但跑不了页面自己的 JS）。
+      const world = args.world ?? 'MAIN';
+      if (!fullAccess && world === 'MAIN') {
+        throw new Error('窄授权下不允许 MAIN 世界的 eval（它能绕过 origin 隔离直接导航）；'
+          + '需要就用 --world ISOLATED，或先在弹窗里打开「完全接管」');
+      }
+      return inject(tabId, 'eval', { code: args.code, worldName: world }, world);
+    }
     case 'click':
       return inject(tabId, 'click', { selector: args.selector }, args.world);
     case 'key':
@@ -1033,7 +1142,27 @@ async function handle(name, args) {
       return { ok: true, closed: tabId };
     }
     case 'navigate': {
-      const tab = await chrome.tabs.update(tabId, { url: args.url });
+      // 事前校验目标 URL —— 这是外部评审里最便宜、收益最高的一条：
+      // 原来是在授权当前 tab 之后直接 tabs.update()，等 onUpdated 才发现跨了 origin 再撤销，
+      // 也就是"事后收权"，导航本身已经发生了。
+      const target = String(args.url ?? '');
+      if (!/^(https?|about|file|chrome-extension):/i.test(target)) {
+        throw new Error(`不支持的导航目标：${target.slice(0, 80)}（只允许 http/https/about/file）`);
+      }
+      const navPolicy = await readPolicy();
+      if (/^https?:/i.test(target) && !POLICY.isDomainAllowed(target, [], navPolicy.blockDomains)) {
+        throw new Error(`目标域名在黑名单中，拒绝导航：${POLICY.hostOf(target)}`);
+      }
+      if (!fullAccess) {
+        const grant = await readGrant();
+        if (!grant) throw new Error(NO_GRANT_MESSAGE);
+        const targetOrigin = POLICY.originOf(target);
+        if (/^https?:/i.test(target) && targetOrigin !== grant.origin) {
+          throw new Error(`窄授权是 origin 级委托：当前共享 ${grant.origin}，不能导航到 ${targetOrigin}；`
+            + '要跨站请先在弹窗里重新共享目标页面，或打开「完全接管」');
+        }
+      }
+      const tab = await chrome.tabs.update(tabId, { url: target });
       // Wait for the document to finish loading, so the caller's auto-snapshot sees the
       // real page instead of a half-rendered document. Takes effect after the extension
       // is reloaded; the MCP layer also retries degenerate snapshots on its own.
@@ -1122,7 +1251,31 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 /* ------------------------------------------------------- runtime + keepalive */
 
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+/**
+ * Hard boundary for privileged settings.
+ *
+ * Before this guard, "全程接管只能用户开启" was only a *convention*: the popup happened to be
+ * the only caller, but any extension context (isolated-world script, future content script)
+ * could have asked for full access itself. The bridge has no such command either way — those
+ * are two separate guarantees, and this one is now enforced instead of assumed.
+ */
+const POPUP_URL = chrome.runtime.getURL('popup.html');
+const PRIVILEGED_KINDS = new Set(['setFullAccess', 'setPolicy', 'setEnabled', 'share', 'unshare', 'setTransport', 'push', 'setWsToken']);
+const fromPopup = (sender) => Boolean(sender)
+  && sender.id === chrome.runtime.id
+  && String(sender.url ?? '').startsWith(POPUP_URL);
+
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (PRIVILEGED_KINDS.has(msg?.kind) && !fromPopup(sender)) {
+    void send({
+      type: 'event',
+      name: 'privileged-rejected',
+      ts: Date.now(),
+      detail: { kind: msg?.kind, from: sender?.url ?? sender?.origin ?? 'unknown' },
+    });
+    reply({ ok: false, error: `forbidden：只有扩展弹窗可以调用 ${msg?.kind}` });
+    return true;
+  }
   if (msg?.kind === 'status') {
     reply({
       connected: connected(),
@@ -1132,6 +1285,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       activeTransport,
       wsUrl: WS_URL,
       nativeHost: NATIVE_HOST,
+      hasWsToken: Boolean(wsToken),
       lastError,
       grant: sharedGrant,
     });
@@ -1143,6 +1297,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     void chrome.storage.local.set({ fullAccess });
     paintBadge();
     reply({ ok: true, fullAccess });
+    return true;
+  }
+  if (msg?.kind === 'setWsToken') {
+    // 纯 WS 模式必须由用户提供令牌（桥接只把它下发给可信通道）。清空即回到"无令牌不连"。
+    const next = String(msg.token ?? '').trim();
+    wsToken = next;
+    void chrome.storage.local.set({ wsToken });
+    if (!next) lastError = 'WS 令牌已清空：回退通道在拿到令牌前不会连接';
+    resetTransport();
+    reply({ ok: true, hasToken: Boolean(next) });
     return true;
   }
   if (msg?.kind === 'setTransport') {
@@ -1240,12 +1404,13 @@ chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'page-bridge-r
 
 // Bootstrap: the persisted master switch, transport and 完全接管 flag win over defaults.
 void Promise.all([
-  chrome.storage.local.get({ enabled: true, transport: 'auto', fullAccess: false }),
+  chrome.storage.local.get({ enabled: true, transport: 'auto', fullAccess: false, wsToken: '' }),
   readGrant(),
 ]).then(([stored, grant]) => {
   enabled = stored.enabled !== false;
   transport = ['auto', 'native', 'ws'].includes(stored.transport) ? stored.transport : 'auto';
   fullAccess = stored.fullAccess === true;
+  wsToken = typeof stored.wsToken === 'string' ? stored.wsToken : '';
   sharedGrant = grant;
   paintBadge();
   if (enabled) connect();
