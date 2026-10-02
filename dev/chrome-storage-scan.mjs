@@ -9,11 +9,23 @@
  *
  *   node dev/chrome-storage-scan.mjs [--extension-id <id>]
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DEFAULT_ID = 'hoiepnbhhkgaakggccoppmknbalamojh';
+/** 未打包扩展的 ID 由绝对路径决定（Chromium 算法，Windows 用 UTF-16LE 编码路径）—— 现场算，不写死。 */
+function idForPath(rawPath) {
+  const normalized = process.platform === 'win32' ? rawPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`) : rawPath;
+  const bytes = process.platform === 'win32' ? Buffer.from(normalized, 'utf16le') : Buffer.from(normalized, 'utf8');
+  return [...createHash('sha256').update(bytes).digest().subarray(0, 16).toString('hex')]
+    .map((nibble) => String.fromCharCode(97 + parseInt(nibble, 16)))
+    .join('');
+}
+
+const PROJECT = dirname(dirname(fileURLToPath(import.meta.url)));
+const DEFAULT_ID = idForPath(join(PROJECT, 'extension'));
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);

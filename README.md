@@ -1,5 +1,8 @@
 # DSH Page Bridge — 让你浏览的页面可被 DSH 读取与操作
 
+[![tests](https://github.com/fannis9/dsh-page-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/fannis9/dsh-page-bridge/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 不用重开浏览器、不换 profile、不动用调试端口：装一个扩展，它把**你正在看的标签页**按需交给本机
 的 DSH Agent。
 
@@ -48,11 +51,11 @@ Chrome 会休眠 MV3 扩展的 service worker，而桥接/DSH 端**无法主动�
   （脱离当前进程、隐藏窗口、无控制台），闲置 30 分钟后自动退出。
 
 1. Chrome 打开 `chrome://extensions` → 右上角打开 **开发者模式** → **加载已解压的扩展程序** →
-   选择 `E:\dsh\page-bridge\extension`。
+   选择本仓库的 `extension` 目录。
 2. （推荐）注册 native host，让扩展优先走 native messaging：
    ```powershell
-   node E:\dsh\page-bridge\register-host.mjs register    # 用户级、免管理员
-   node E:\dsh\page-bridge\register-host.mjs unregister  # 随时撤销（扩展自动回退 WS）
+   node register-host.mjs register    # 用户级、免管理员
+   node register-host.mjs unregister  # 随时撤销（扩展自动回退 WS）
    ```
 3. **改过扩展代码后**，在 `chrome://extensions` 里点一次 **↻** 重载（这步最容易被忘）。
 4. 点一下工具栏里的扩展图标：应显示绿点 +
@@ -74,22 +77,22 @@ node bridge.mjs --port 8799 --idle-exit 0   # 手动常驻（0 = 不自动退出
 ## 命令行速查
 
 ```powershell
-node E:\dsh\page-bridge\page.mjs status                 # 连接状态
-node E:\dsh\page-bridge\page.mjs tabs                   # 所有标签页
-node E:\dsh\page-bridge\page.mjs state                  # 当前页：标题/URL/选中文本/标题结构/表单/滚动/正文
-node E:\dsh\page-bridge\page.mjs text --max 40000       # 整页纯文本
-node E:\dsh\page-bridge\page.mjs html --max 60000       # 原始 HTML
-node E:\dsh\page-bridge\page.mjs eval "document.title"  # 执行任意 JS（--world MAIN 可读页面变量）
-node E:\dsh\page-bridge\page.mjs click "text=登录"       # 按 CSS 选择器或 text= 文本点击
-node E:\dsh\page-bridge\page.mjs type "#q" "关键词"      # 输入（--submit 顺带回车提交）
-node E:\dsh\page-bridge\page.mjs select "#city" "杭州"
-node E:\dsh\page-bridge\page.mjs scroll "#price"        # 或 --by 800
-node E:\dsh\page-bridge\page.mjs highlight "#total"     # 在页面上高亮某元素 2.5 秒（你能看见）
+node page.mjs status                 # 连接状态
+node page.mjs tabs                   # 所有标签页
+node page.mjs state                  # 当前页：标题/URL/选中文本/标题结构/表单/滚动/正文
+node page.mjs text --max 40000       # 整页纯文本
+node page.mjs html --max 60000       # 原始 HTML
+node page.mjs eval "document.title"  # 执行任意 JS（--world MAIN 可读页面变量）
+node page.mjs click "text=登录"       # 按 CSS 选择器或 text= 文本点击
+node page.mjs type "#q" "关键词"      # 输入（--submit 顺带回车提交）
+node page.mjs select "#city" "杭州"
+node page.mjs scroll "#price"        # 或 --by 800
+node page.mjs highlight "#total"     # 在页面上高亮某元素 2.5 秒（你能看见）
 node page.mjs shot E:\dsh\screenshots\shot.png   # 可见区域截图
 node page.mjs activate 1741125239        # 切到某个标签页
 node page.mjs close 1741125240           # 关掉某个标签页
 node page.mjs events --limit 30          # 你最近看了哪些页面
-node E:\dsh\page-bridge\page.mjs wait "#result"         # 等元素出现
+node page.mjs wait "#result"         # 等元素出现
 ```
 
 通用参数：`--tab <id>`（指定标签页，默认当前活动页）、`--wait <ms>`（等扩展连上）、
@@ -115,9 +118,9 @@ node E:\dsh\page-bridge\page.mjs wait "#result"         # 等元素出现
 注册 / 查看 / 卸载（**用户级、免管理员、完全可回退**）：
 
 ```powershell
-node E:\dsh\page-bridge\register-host.mjs status
-node E:\dsh\page-bridge\register-host.mjs register      # 写启动脚本 + 清单 + HKCU 注册表
-node E:\dsh\page-bridge\register-host.mjs unregister    # 撤销（扩展自动回退到 WS）
+node register-host.mjs status
+node register-host.mjs register      # 写启动脚本 + 清单 + HKCU 注册表
+node register-host.mjs unregister    # 撤销（扩展自动回退到 WS）
 ```
 
 Windows 上会写入 `%APPDATA%\Google\Chrome\NativeMessagingHosts\com.dsh.page_bridge.json` 和
@@ -128,8 +131,8 @@ Windows 上会写入 `%APPDATA%\Google\Chrome\NativeMessagingHosts\com.dsh.page_
 排查 native 是否真的生效（不需要浏览器）：
 
 ```powershell
-node E:\dsh\page-bridge\dev\sw-load-test.mjs          # service worker 加载 + 传输状态机
-node E:\dsh\page-bridge\dev\chrome-extension-state.mjs # Chrome 眼里这个扩展是什么状态
+node dev\sw-load-test.mjs          # service worker 加载 + 传输状态机
+node dev\chrome-extension-state.mjs # Chrome 眼里这个扩展是什么状态
 # 是否由 Chrome 拉起：找一个父进程是 chrome.exe 的 bridge.mjs --native
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'bridge.mjs' -and $_.CommandLine -match '--native' }
 ```
@@ -145,11 +148,11 @@ Edge 是 Chromium，本扩展只用了标准 MV3 API（`scripting` / `storage` /
 id = mapToAtoP( hex( SHA256( pathBytes )[0..15] ) )   # pathBytes：Windows = 路径的 UTF-16LE 编码
 ```
 
-同一目录 `E:\dsh\page-bridge\extension` → 两边都得到 `hoiepnbhhkgaakggccoppmknbalamojh`
+同一目录 `extension` → 两边都得到 `hoiepnbhhkgaakggccoppmknbalamojh`
 （该算法是从真实 profile 反推验证过的）。所以 `allowed_origins` 只写一个 ID 就能两边通用：
 
 ```powershell
-node E:\dsh\page-bridge\dev\extension-id-test.mjs   # 现场算出 ID 并比对 Chrome/Edge 两份清单
+node dev\extension-id-test.mjs   # 现场算出 ID 并比对 Chrome/Edge 两份清单
 ```
 
 **2. native host 早已双份注册。** `register-host.mjs` 默认 `--browser both`，会同时写
@@ -172,7 +175,7 @@ node E:\dsh\page-bridge\dev\extension-id-test.mjs   # 现场算出 ID 并比对 
 
 ```
 edge://extensions → 左下角打开「开发人员模式」→「加载解压缩的扩展」
-→ 选 E:\dsh\page-bridge\extension → 点工具栏扩展图标 → 「共享当前标签页」或「完全接管浏览器」
+→ 选 extension → 点工具栏扩展图标 → 「共享当前标签页」或「完全接管浏览器」
 ```
 
 若你把扩展**复制到别的目录**再加载，路径变了 → ID 也变。这时重跑一次
@@ -254,9 +257,9 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 - 快照算法在扩展里（`extension/background.js` 的 `#region aria-snapshot` 区块），自包含以便注入；
   `dev/snapshot-probe.mjs` 会把这同一段代码抽出来在真实 Chromium 里跑，改算法时可即时验证：
   ```powershell
-  node E:\dsh\page-bridge\dev\snapshot-probe.mjs                     # 内置夹具
-  node E:\dsh\page-bridge\dev\snapshot-probe.mjs --url https://x.com --refs
-  node E:\dsh\page-bridge\dev\snapshot-probe.mjs --selector form     # 只抓某棵子树
+  node dev\snapshot-probe.mjs                     # 内置夹具
+  node dev\snapshot-probe.mjs --url https://x.com --refs
+  node dev\snapshot-probe.mjs --selector form     # 只抓某棵子树
   ```
 - ⚠️ **跑自检脚本时注意隔离**：`mock-extension.mjs` 与真扩展都会以 `chrome-extension` 身份连桥接，
   桥接会把命令发给**先连上的那个**——真扩展开着时，冒烟脚本可能操作你真实的浏览器（我踩过一次：
@@ -305,10 +308,26 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 - `dev/` 下全部测试与诊断工具（快照探针、权限单测、native 帧测试、假 `chrome` 的 service worker 测试、
   Chrome 扩展状态/存储诊断）——这些是本项目自研的验证手段。
 
-**许可说明**：BrowserMCP 与 Playwright 为 Apache-2.0，mcp-chrome 为 MIT。本项目仅借鉴设计、
+**许可说明**：**本项目自身以 [MIT](LICENSE) 授权**（Copyright © 2026 fannis9）。
+所借鉴的 BrowserMCP 与 Playwright 为 Apache-2.0、mcp-chrome 为 MIT；本项目仅借鉴设计、
 未摘录其源码，故不附带其源码副本；若将来要直接摘录其中代码，需按对应许可保留版权声明与 NOTICE。
 （另：DSH 自带的 `@playwright/mcp` provider 提供 `mcp__playwright-mcp__*` 那 24 个工具，
 与 Page Bridge 是**两条独立通路**，不属本项目范围。）
+
+## 自检与 CI
+
+这套自检**不需要浏览器**，所以在 GitHub Actions 上直接跑（[`.github/workflows/tests.yml`](.github/workflows/tests.yml)）：
+
+| 脚本 | 覆盖 |
+|---|---|
+| `dev/grant-policy-test.mjs` | 权限策略 26 个断言（含 `example.com.evil.com` 后缀伪装） |
+| `dev/sw-load-test.mjs` | 用假 `chrome` API 加载 service worker，11 个场景 24 断言 |
+| `dev/native-framing-test.mjs` | native messaging 帧往返：host 模式 + relay 模式 |
+| `dev/extension-id-test.mjs` | Chromium 扩展 ID 推导，Chrome/Edge 一致性 |
+| `dev/smoke-snapshot.mjs` / `smoke-mcp.mjs` | MCP 层冒烟（自带桥接 + 假扩展，隔离端口） |
+
+需要真浏览器的两个（`dev/snapshot-probe.mjs` 快照探针、`dev/native-e2e-test.mjs` 端到端）**不在 CI 里**：
+前者要 Chromium，后者依赖 `--load-extension`（官方 Chrome 137+ 与 Edge 154 已移除，会自己 SKIP）。
 
 ## 隐私边界
 
@@ -347,7 +366,7 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 
 ```powershell
 # A. link 安装（可被 plugin_manager 管理）
-dsh plugin --profile desktop add link:E:\dsh\page-bridge\dsh-plugin
+dsh plugin --profile desktop add link:<仓库路径>\dsh-plugin
 
 # B. 已经生效的等价做法：把 dsh-plugin/cordis.patch.yml 的 insert 段
 #    复制进 profile 的 cordis.patch.yml（当前 desktop profile 就是这么挂的）

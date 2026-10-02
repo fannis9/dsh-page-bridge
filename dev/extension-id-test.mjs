@@ -17,10 +17,9 @@
  *
  *   node dev/extension-id-test.mjs [--path <extension dir>]
  *
- * 反推过程（2026-10-01）：从 Chrome 的 Secure Preferences 读到真值
- *   path = E:\dsh\page-bridge\extension  →  id = hoiepnbhhkgaakggccoppmknbalamojh
- * 逐一试 UTF-8 / UTF-16LE / 大小写 / 尾随反斜杠 / 正斜杠 / \\?\ 前缀等组合，
- * 只有 **UTF-16LE + 取前 16 字节** 能复现该 ID（UTF-8 会算出 aipfalmpefndkjechmfncdcnpicijifo）。
+ * 反推过程：从 Chrome 的 Secure Preferences 里读到"某个已加载目录 → 它实际分配到的 ID"这组真值，
+ * 然后逐一试 UTF-8 / UTF-16LE / 大小写 / 尾随反斜杠 / 正斜杠 / \\?\ 前缀等组合，
+ * 只有 **UTF-16LE + 取 SHA256 前 16 字节** 能复现该 ID（用 UTF-8 会算出完全不同的结果）。
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';

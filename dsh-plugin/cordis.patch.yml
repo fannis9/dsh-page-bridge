@@ -1,13 +1,15 @@
-# dsh-page-bridge — profile bundle patch.
+# dsh-page-bridge — profile bundle patch（示例）。
 #
 # Mounts the DSH MCP client against page-bridge/mcp-server.mjs, which publishes the
-# user's *real* Chrome tab as `mcp__page-bridge__*` tools in every session.
+# user's *real* browser tab as `mcp__page-bridge__*` tools in every session.
 #
-# Requirements: the "DSH Page Bridge" Chrome extension loaded (chrome://extensions →
-# developer mode → load unpacked → .../page-bridge/extension). The bridge process itself
-# is started on demand by the MCP server and exits by itself when idle.
+# Requirements: the "DSH Page Bridge" extension loaded (chrome://extensions or
+# edge://extensions → developer mode → load unpacked → .../page-bridge/extension).
+# The bridge process itself is started on demand by the MCP server and exits by itself
+# when idle.
 #
-# Paths below are absolute; adjust them if this checkout moves.
+# ⚠️ 下面两处路径请改成你本机的实际路径（Windows 用双反斜杠），再复制进 profile 的
+#    cordis.patch.yml。`node` 用哪个都行，只要是能跑 Node 可执行文件的绝对路径。
 - insert:
     - id: page-bridge-mcp
       name: "@deepseek-ai/dsh-mcp-client"
@@ -15,9 +17,9 @@
         transport: stdio
         # Public tool namespace becomes mcp__page-bridge__<tool>
         serverName: page-bridge
-        command: "C:\\Users\\Cypress\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\node\\bin\\node.exe"
+        command: "C:\\path\\to\\node.exe"                 # ← 改成你的 node 路径
         args:
-          - "E:\\dsh\\page-bridge\\mcp-server.mjs"
+          - "C:\\path\\to\\page-bridge\\mcp-server.mjs"   # ← 改成本仓库 mcp-server.mjs 的绝对路径
         # A missing/stopped bridge must never block session creation.
         failOnStartupError: false
         reconnect:

@@ -1,0 +1,45 @@
+name: tests
+
+# 这套自检**不需要浏览器**：快照算法探针与真实浏览器端到端测试不在这里跑
+# （前者要 Chromium，后者需要 --load-extension，官方 Chrome 137+ / Edge 154 已移除）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  browser-free:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 语法检查（全部 .mjs / .js）
+        run: |
+          for f in $(git ls-files '*.mjs' '*.js'); do
+            node --check "$f" || exit 1
+          done
+          echo "语法检查通过"
+
+      - name: 权限策略单测（26 个断言，含后缀伪装用例）
+        run: node dev/grant-policy-test.mjs
+
+      - name: service worker 状态机（假 chrome API，11 个场景）
+        run: node dev/sw-load-test.mjs
+
+      - name: native messaging 帧往返（host 模式 + relay 模式）
+        run: node dev/native-framing-test.mjs
+
+      - name: 扩展 ID 推导（Chromium 算法，Chrome/Edge 一致性）
+        run: node dev/extension-id-test.mjs
+
+      - name: MCP 层冒烟（自带桥接 + 假扩展，隔离端口 8798）
+        run: node dev/smoke-snapshot.mjs
+
+      - name: MCP 工具清单
+        run: node smoke-mcp.mjs

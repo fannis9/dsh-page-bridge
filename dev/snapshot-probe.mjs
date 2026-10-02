@@ -13,11 +13,12 @@
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? 'C:/Users/Cypress/.dsh/profiles/desktop';
+const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
 const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
 const { chromium } = require('playwright-core');
 

@@ -12,8 +12,11 @@
  */
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HERE = 'E:/dsh/page-bridge';
+/** 项目根目录（本文件在 dev/ 下，往上一级） */
+const HERE = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOST_PORT = 8796;
 const RELAY_PORT = 8797;
 const children = [];

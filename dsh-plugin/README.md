@@ -44,7 +44,7 @@
 **方式 A：本地 link 安装**（推荐，可随 `plugin_manager` 管理）
 
 ```powershell
-dsh plugin --profile desktop add link:E:\dsh\page-bridge\dsh-plugin
+dsh plugin --profile desktop add link:<仓库路径>\dsh-plugin
 ```
 
 **方式 B：直接把这行加进 profile 的 `cordis.patch.yml`**（见本目录 `cordis.patch.yml` 的 insert 段）
@@ -55,7 +55,7 @@ dsh plugin --profile desktop add link:E:\dsh\page-bridge\dsh-plugin
 
 ```powershell
 # 1) 桥接是否可达（会自动拉起）
-node E:\dsh\page-bridge\page.mjs status
+node page.mjs status
 
 # 2) 在新会话里让模型调用 page_state，应返回你当前标签页的标题/URL/正文
 ```

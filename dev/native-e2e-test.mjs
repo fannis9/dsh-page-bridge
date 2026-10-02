@@ -17,15 +17,18 @@
  *   node dev/native-e2e-test.mjs                 # chrome (may skip on Chrome 137+)
  *   node dev/native-e2e-test.mjs --browser edge  # Edge — expected to run for real
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = join(HERE, '..');
 const EXTENSION = join(PROJECT, 'extension');
-const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? 'C:/Users/Cypress/.dsh/profiles/desktop';
+/** playwright-core 从 DSH profile 的 node_modules 里取；可用 DSH_PROFILE_DIR 覆盖 */
+const PROFILE_DIR = process.env.DSH_PROFILE_DIR ?? join(homedir(), '.dsh', 'profiles', 'desktop');
 const require = createRequire(pathToFileURL(`${PROFILE_DIR}/`).href);
 const { chromium } = require('playwright-core');
 
@@ -34,6 +37,15 @@ const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
   return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : fallback;
 };
+
+/** Chromium 的未打包扩展 ID：路径字节（Windows 为 UTF-16LE）→ SHA256 前 16 字节 → 映射到 a-p。 */
+function idForPath(rawPath) {
+  const normalized = process.platform === 'win32' ? rawPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`) : rawPath;
+  const bytes = process.platform === 'win32' ? Buffer.from(normalized, 'utf16le') : Buffer.from(normalized, 'utf8');
+  return [...createHash('sha256').update(bytes).digest().subarray(0, 16).toString('hex')]
+    .map((nibble) => String.fromCharCode(97 + parseInt(nibble, 16)))
+    .join('');
+}
 const BROWSER = String(flag('browser', process.env.DSH_BROWSER ?? 'chrome')).toLowerCase();
 const CANDIDATES = {
   chrome: ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'],
@@ -105,7 +117,8 @@ try {
   let worker = context.serviceWorkers()[0] ?? null;
   console.log(`启动时 service worker: ${worker?.url() ?? '(无)'}`);
 
-  const EXTENSION_ID = listed[0]?.id ?? process.env.DSH_EXTENSION_ID ?? 'hoiepnbhhkgaakggccoppmknbalamojh';
+  // Fall back to the ID this extension directory actually hashes to.
+  const EXTENSION_ID = listed[0]?.id ?? process.env.DSH_EXTENSION_ID ?? idForPath(EXTENSION);
   // What the native host manifest actually allows — the ID must be in there.
   const hostManifest = join(
     process.env.APPDATA ?? '',
