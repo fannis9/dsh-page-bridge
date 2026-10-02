@@ -164,6 +164,38 @@ try {
     console.log(`  再合上就看不到: ${closedAgain.inYaml ? '❌ 仍然泄漏' : '✅'}`);
   }
 
+  // ref 稳定性自检：中间插入新元素后，老元素的 ref 不应整体错位
+  if (!selector) {
+    const stable = await page.evaluate(`(() => {
+      ${builder}
+      const pick = (needle) => deepQueryAll('button,a').find((el) => (el.innerText || '').includes(needle));
+      buildAriaSnapshot({ maxNodes: 400 });
+      const before = {
+        submit: pick('提交') && pick('提交').getAttribute('data-dsh-ref'),
+        shadow: pick('影子按钮') && pick('影子按钮').getAttribute('data-dsh-ref'),
+        home: pick('首页') && pick('首页').getAttribute('data-dsh-ref'),
+      };
+      const fresh = document.createElement('button');
+      fresh.textContent = '插队按钮';
+      document.querySelector('main').prepend(fresh);
+      const snap2 = buildAriaSnapshot({ maxNodes: 400 });
+      const after = {
+        submit: pick('提交') && pick('提交').getAttribute('data-dsh-ref'),
+        shadow: pick('影子按钮') && pick('影子按钮').getAttribute('data-dsh-ref'),
+        home: pick('首页') && pick('首页').getAttribute('data-dsh-ref'),
+        fresh: fresh.getAttribute('data-dsh-ref'),
+      };
+      return { before, after, freshInYaml: snap2.yaml.includes('插队按钮'), freshRefAdvertised: snap2.yaml.includes('[ref=' + after.fresh + ']') };
+    })()`);
+    console.log('=== ref 稳定性自检（中间插入新元素） ===');
+    console.log(`  插入前: ${JSON.stringify(stable.before)}`);
+    console.log(`  插入后: ${JSON.stringify(stable.after)}`);
+    const kept = stable.before.submit && stable.before.submit === stable.after.submit
+      && stable.before.shadow === stable.after.shadow && stable.before.home === stable.after.home;
+    console.log(`  老元素 ref 未漂移   : ${kept ? '✅' : '❌ 整体错位了'}`);
+    console.log(`  新元素拿到新号并广告: ${stable.after.fresh && stable.freshRefAdvertised ? '✅ ' + stable.after.fresh : '❌'}`);
+  }
+
   if (showRefs) {
     console.log('=== ref 解析自检（含 shadow 内容） ===');
     const resolved = await page.evaluate(`(() => {

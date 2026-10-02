@@ -248,7 +248,14 @@ function PAGE_OP(payload) {
     const maxRefs = opts.maxRefs || 200;
     const maxName = opts.maxName || 120;
 
-    deepQueryAll('[data-dsh-ref]').forEach((el) => el.removeAttribute('data-dsh-ref'));
+    // Ref 稳定性：data-dsh-ref 留在 DOM 上，所以**同一个元素跨快照保持同一个编号**。
+    // 这样"点 A 再点 B"时，中间新插入的节点不会让后面的 ref 整体错位；元素消失后它的 ref
+    // 自然失效（属性随节点一起没了）。新元素从当前最大编号往后接着发。
+    let refSeq = 0;
+    for (const el of deepQueryAll('[data-dsh-ref]')) {
+      const n = Number(String(el.getAttribute('data-dsh-ref')).replace(/^e/, ''));
+      if (Number.isFinite(n) && n > refSeq) refSeq = n;
+    }
 
     const ROLE = {
       a: 'link', area: 'link', button: 'button', textarea: 'textbox', select: 'combobox',
@@ -401,10 +408,17 @@ function PAGE_OP(payload) {
       const focusable = el.tabIndex >= 0 && tag !== 'body' && tag !== 'html';
       const actionable = Boolean(role && (ACTIONABLE.has(role) || el.hasAttribute('role'))) || focusable;
       let ref = '';
-      if (visibleHere && actionable && refs < maxRefs) {
-        refs += 1;
-        ref = `e${refs}`;
-        el.setAttribute('data-dsh-ref', ref);
+      if (visibleHere && actionable) {
+        // 已有编号就沿用（这就是"稳定 ref"），没有才发新号
+        const existing = el.getAttribute('data-dsh-ref');
+        if (existing) {
+          ref = existing;
+        } else {
+          refSeq += 1;
+          ref = `e${refSeq}`;
+          el.setAttribute('data-dsh-ref', ref);
+        }
+        if (refs < maxRefs) refs += 1; else ref = '';   // 本次快照只广告前 maxRefs 个
       }
 
       // Composed tree: when a custom element has a shadow root, that is what actually

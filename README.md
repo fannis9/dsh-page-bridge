@@ -272,8 +272,11 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 ```
 
 - **ref 能直接当目标用**：`page_click {ref:"e6"}`、`page_type {ref:"e6", text:"…"}`，
-  等价于 `selector: "@e6"`（也接受 `e6` / `ref=e6`）。ref 写在 DOM 的 `data-dsh-ref` 上，
-  所以下一次注入仍能解析；每次生成快照会先清掉旧 ref，避免失效引用。
+  等价于 `selector: "@e6"`（也接受 `e6` / `ref=e6`）。ref 写在 DOM 的 `data-dsh-ref` 上。
+- **ref 是稳定的（跨快照不漂移）**：同一个元素在多次快照里保持同一个编号，只有新出现的元素才发新号，
+  元素消失后它的 ref 自然失效。这样"点 A 再点 B"时，中间新插入的节点**不会**让后面的 ref 整体错位。
+  （早期版本每次快照都重新编号——实测确实会让人点错，这条改动来自一次答题页实测反馈。若某元素的
+  ref 恰好没出现在最新快照里，说明它当前不可见，别拿旧 ref 硬点。）
 - **变更类工具自动回传快照**：`page_click` / `page_type` / `page_select` / `page_scroll` /
   `page_navigate` 执行后都会附上最新快照（含新 ref），模型不用再手动抓一次。
   这与 BrowserMCP 的 `ToolFactory(snapshot)` 设计一致；可用环境变量关闭：
@@ -300,6 +303,10 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
   就是）常按 `keyCode` 分支，于是"按回车提交 token"会**静默失效**——这正是我加 topics 时踩的坑。
   `type --submit` 在没有 `<form>` 时也改用这套按键。
   真浏览器自检：`dev/key-dispatch-test.mjs`（含一个**反例**：旧写法派发回车应当提交不了）。
+- **`--submit` 和 `page_key Enter` 别混用**：目标是**真实表单**（登录、搜索）时用 `type --submit`
+  （会走 `form.requestSubmit()`）；只是"某个组件要求按回车"（如 Primer 的 token 输入框、
+  答题页的填空检查）就用 **`page_key Enter`** —— 因为输入框若在 `<form>` 里，`--submit`
+  会**触发整表提交**（例如答题页会直接交卷），别拿它赌页面自己的 `preventDefault`。
 - 快照算法在扩展里（`extension/background.js` 的 `#region aria-snapshot` 区块），自包含以便注入；
   `dev/snapshot-probe.mjs` 会把这同一段代码抽出来在真实 Chromium 里跑，改算法时可即时验证：
   ```powershell
