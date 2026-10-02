@@ -69,6 +69,7 @@ const FIXTURE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><
     <div style="display:contents"><button>扁平容器里的按钮</button></div>
     <div style="visibility:hidden"><button style="visibility:visible">复活按钮</button></div>
     <button style="visibility:hidden">不可见的按钮</button>
+    <details id="fold"><summary>展开看解析</summary><p>折叠里的文字不该出现</p></details>
   </main>
   <footer>© 2026 测试页脚</footer>
   <script>
@@ -118,7 +119,16 @@ try {
         reviveInYaml: yaml.includes('复活按钮'),
         invisibleInYaml: yaml.includes('不可见的按钮'),
         hiddenInYaml: yaml.includes('隐藏按钮'),
+        foldedInYaml: yaml.includes('折叠里的文字不该出现'),
         flatRect: rect ? Math.round(rect.width) + 'x' + Math.round(rect.height) : 'n/a',
+        foldDiag: (() => {
+          const p = document.querySelector('#fold p');
+          if (!p) return 'no #fold p';
+          const st = getComputedStyle(p);
+          const box = p.getBoundingClientRect();
+          return 'contentVisibility=' + st.contentVisibility + ' display=' + st.display
+            + ' visibility=' + st.visibility + ' rect=' + Math.round(box.width) + 'x' + Math.round(box.height);
+        })(),
         deepShadow: deepQueryAll('button').filter((el) => (el.innerText || '').includes('影子按钮')).length,
         plainQsa: document.querySelectorAll('button').length,
       };
@@ -129,8 +139,29 @@ try {
     console.log(`  visibility:hidden 里被后代翻盘的按钮: ${hidden.reviveInYaml ? '✅' : '❌'}`);
     console.log(`  自身不可见的按钮不该拿到 ref      : ${hidden.invisibleInYaml ? '❌ 混进来了（可能点到看不见的元素）' : '✅ 正确屏蔽'}`);
     console.log(`  display:none 里的按钮仍应被排除    : ${hidden.hiddenInYaml ? '❌ 混进来了' : '✅ 正确排除'}`);
+    console.log(`  折叠的 <details> 内容不该被读到    : ${hidden.foldedInYaml ? '❌ 泄漏了（保真问题）' : '✅ 正确屏蔽'}`);
+    console.log(`  #fold p 的实际样式                : ${hidden.foldDiag}`);
     console.log(`  deepQueryAll 找到影子按钮       : ${hidden.deepShadow > 0 ? '✅' : '❌'}`);
     console.log(`  普通 querySelectorAll 的 button 数（少于总数即证明隔着 shadow）: ${hidden.plainQsa}`);
+  }
+
+  // 正向对照：把 <details> 展开后，内容就**应该**出现
+  if (!selector) {
+    const opened = await page.evaluate(`(() => {
+      ${builder}
+      document.getElementById('fold').open = true;
+      const snap = buildAriaSnapshot({ maxNodes: 400 });
+      return { inYaml: snap.yaml.includes('折叠里的文字不该出现') };
+    })()`);
+    const closedAgain = await page.evaluate(`(() => {
+      ${builder}
+      document.getElementById('fold').open = false;
+      const snap = buildAriaSnapshot({ maxNodes: 400 });
+      return { inYaml: snap.yaml.includes('折叠里的文字不该出现') };
+    })()`);
+    console.log('=== 折叠内容开关对照 ===');
+    console.log(`  展开后能看到 : ${opened.inYaml ? '✅' : '❌'}`);
+    console.log(`  再合上就看不到: ${closedAgain.inYaml ? '❌ 仍然泄漏' : '✅'}`);
   }
 
   if (showRefs) {

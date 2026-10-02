@@ -410,7 +410,12 @@ function PAGE_OP(payload) {
       // Composed tree: when a custom element has a shadow root, that is what actually
       // renders, so descend into it instead of the (often empty) light DOM.
       const childNodes = el.shadowRoot ? [...el.shadowRoot.children] : [...el.children];
-      const children = childNodes.filter((c) => !SKIP.has(c.tagName.toLowerCase()) && shown(c));
+      // 闭合的 <details> 只渲染 <summary>。注意：Chromium 是**用 slot 机制**隐藏内容的，
+      // 被隐藏的节点计算样式仍是 visible、rect 也仍有尺寸，所以只能按语义判断（不能靠样式）。
+      const renderable = (tag === 'details' && !el.open)
+        ? childNodes.filter((c) => c.tagName.toLowerCase() === 'summary')
+        : childNodes;
+      const children = renderable.filter((c) => !SKIP.has(c.tagName.toLowerCase()) && shown(c));
       const namingOnly = TRANSPARENT_TAGS.has(tag) && !el.hasAttribute('data-dsh-ref');
       const structural = Boolean(role) && ALWAYS_EMIT.has(role) && children.length > 0;
       const emit = visibleHere && !namingOnly && Boolean(role)

@@ -286,6 +286,7 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
   2. **`display: contents`**：自身 `getBoundingClientRect()` 是 0×0，但子节点正常布局——
      GitHub 的对话框就藏在 `<dialog-helper>` 里，栽在这上面会让"对话框明明在屏幕上、快照里什么都没有"；
   3. **`visibility: hidden` 的祖先 + 后代 `visibility: visible` 翻盘**（CSS 允许，`display:none` 不行）。
+  4. **闭合的 `<details>`**：只渲染 `<summary>`。Chromium 是用 **slot 机制**隐藏内容的——被隐藏节点的计算样式仍正常、`rect` 也仍有尺寸，所以只能按语义判断，否则折叠的答案/解析会被读出来（我拿自测答题页当靶子时发现的）。
 
   反例保留：`display: none` / `opacity: 0` / `aria-hidden` 里的内容依然会被正确排除；
   而且**自身不可见的元素不会分配 ref**——否则模型会拿到指向"看不见的按钮"的 ref（例如隐藏的
