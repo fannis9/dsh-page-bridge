@@ -17,7 +17,9 @@ const CHROME = [
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
 ].find((path) => path && existsSync(path));
-const source = readFileSync(join(ROOT, 'extension', 'background.js'), 'utf8');
+// 先归一化行尾再取锚点：下面的锚点含 "\n\n"，若 checkout 是 CRLF 就会失配
+// （browser-e2e 首次真实运行正是挂在这里）。仓库侧另有 .gitattributes 声明源码为 LF，双保险。
+const source = readFileSync(join(ROOT, 'extension', 'background.js'), 'utf8').replace(/\r\n/g, '\n');
 const pageOpStart = source.indexOf('function PAGE_OP(payload) {');
 const pageOpEnd = source.indexOf('\n\n/* --------------------------------------------------------- transport plumbing', pageOpStart);
 if (pageOpStart < 0 || pageOpEnd < 0) throw new Error('无法从 background.js 抽取 PAGE_OP');

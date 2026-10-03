@@ -1,6 +1,16 @@
 # 统一换行：仓库内以 LF 存储，检出时按平台转换
 * text=auto
 
+# 源码与文档一律 LF（不随平台转换）。
+# 起因：dev/page-read-test.mjs 等脚本按字符串锚点（含 "\n\n"）从 extension/background.js 抽取 PAGE_OP，
+# Windows 上 core.autocrlf/text=auto 会让检出变成 CRLF，锚点随即失配 ——
+# browser-e2e 工作流第一次真实运行（2026-10-03）就挂在这里。
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+
 # 二进制资产别动
 *.png binary
 *.ico binary
