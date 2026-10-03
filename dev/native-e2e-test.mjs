@@ -26,6 +26,21 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = join(HERE, '..');
 const EXTENSION = join(PROJECT, 'extension');
 const MANIFEST_VERSION = JSON.parse(readFileSync(join(EXTENSION, 'manifest.json'), 'utf8')).version;
+
+/**
+ * 本地控制面自能力令牌收紧后要求 `Authorization: Bearer <token>`。
+ * 这个 E2E 原先不带令牌 fetch /status，令牌上线后必然 401（browser-e2e 第一次真实运行即暴露此问题）。
+ * 令牌文件就是桥接的默认位置：<repo>/var/bridge-token（扩展经 native messaging 拉起桥接时用的也是它）。
+ */
+const BRIDGE_TOKEN_FILE = join(PROJECT, 'var', 'bridge-token');
+const bridgeAuthHeaders = () => {
+  try {
+    const token = readFileSync(BRIDGE_TOKEN_FILE, 'utf8').trim();
+    return token ? { authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+};
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
@@ -185,7 +200,7 @@ try {
   // The bridge is the ground truth: it must see a client whose via is 'native'.
   let status = null;
   try {
-    status = await (await fetch('http://127.0.0.1:8799/status')).json();
+    status = await (await fetch('http://127.0.0.1:8799/status', { headers: bridgeAuthHeaders() })).json();
   } catch (error) {
     status = { error: String(error?.message ?? error) };
   }
