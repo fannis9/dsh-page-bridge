@@ -21,10 +21,9 @@ jobs:
 
       - name: 语法检查（全部 .mjs / .js）
         run: |
-          for f in $(git ls-files '*.mjs' '*.js'); do
-            node --check "$f" || exit 1
-          done
-          echo "语法检查通过"
+          # 与本地 `npm run check:all` 共用同一份实现（dev/check-syntax.mjs），避免两边规则漂移：
+          # 之前 CI 用 git ls-files 全扫、本地只查 8 个入口，于是 page-op 片段让 CI 一进来就红。
+          npm run check:all
 
       - name: 权限策略单测（26 个断言，含后缀伪装用例）
         run: node dev/grant-policy-test.mjs
