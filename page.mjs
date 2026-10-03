@@ -237,6 +237,12 @@ try {
     const tail = Number(flags.tail ?? 0);
     const want = tail > 0 ? Math.max(Number(flags.max ?? 0), tail + 20000) : Number(flags.max ?? 20000);
     const res = await cmd('text', { max: want, selector: flags.selector });
+    // 扩展在 selector 找不到时返回 { ok:false, reason }（这是正常结果而非异常）；
+    // 不显式处理就只会打印一个空行，看起来像"这页没内容"。
+    if (res && res.ok === false) {
+      console.error(`[page.mjs] ${res.reason ?? '读取失败'}`);
+      process.exit(1);
+    }
     const full = res.text ?? '';
     console.log(tail > 0 ? full.slice(-tail) : full);
     if (res.length > full.length) console.log(`\n... 已截断（原长 ${res.length} 字符，用 --max 调大）`);
@@ -248,6 +254,7 @@ try {
       selector: flags.selector,
     });
     console.log(res.html ?? '');
+    if (res.ok === false) console.error(`[page.mjs] ${res.reason ?? '读取失败'}`);
     if (res.truncated) console.error(`[page.mjs] HTML 已截断：${res.nodes} 个节点 / ${res.length} 字符`);
   } else if (command === 'eval') {
     out(await cmd('eval', { code: rest[1] ?? '', ...(flags.world ? { world: flags.world } : {}) }));
