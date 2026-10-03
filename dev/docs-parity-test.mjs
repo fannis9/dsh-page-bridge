@@ -91,14 +91,18 @@ for (const [zhPath, enPath] of PAIRS) {
   const enRows = count(en, /^\|/gm);
   check(`  表格行数一致（中 ${zhRows} / 英 ${enRows}）`, zhRows === enRows);
 
-  // 逐行比较表格"列结构"：每一行的竖线数量序列必须相同 —— 抓"译文多一列/少一列"。
-  const rowShape = (text) => (text.match(/^\|.*$/gm) ?? []).map((line) => (line.match(/\|/g) ?? []).length);
+  // 逐行比较表格"列结构"：每一行的**单元格数**必须相同 —— 抓"译文多一列/少一列"。
+  // 注意：Markdown 允许省略行尾竖线（`| a | b | c` 也合法），所以比竖线数会误报，比单元格数才对。
+  const rowShape = (text) => (text.match(/^\|.*$/gm) ?? []).map((line) => {
+    const body = line.replace(/^\|/, '').replace(/\|\s*$/, '');
+    return body.split('|').map((cell) => cell.trim()).length;
+  });
   const zhShape = rowShape(zh);
   const enShape = rowShape(en);
   const shapeDiffs = zhShape
-    .map((v, i) => (v === enShape[i] ? null : `第 ${i + 1} 行 中 ${v} 竖线 / 英 ${enShape[i] ?? '-'}`))
+    .map((v, i) => (v === enShape[i] ? null : `第 ${i + 1} 行 中 ${v} 列 / 英 ${enShape[i] ?? '-'} 列`))
     .filter(Boolean);
-  check(`  表格列结构一致（中 ${zhShape.length} 行）`, zhShape.length === enShape.length && shapeDiffs.length === 0, shapeDiffs.slice(0, 4).join(' | '));
+  check(`  表格列结构一致（中 ${zhShape.length} 行，每行 ${zhShape[2] ?? '?'} 列）`, zhShape.length === enShape.length && shapeDiffs.length === 0, shapeDiffs.slice(0, 4).join(' | '));
 
   // 只排除"指向对方那一份"的语言切换链接；兄弟目录下写的是裸文件名，所以要连 basename 一起排除。
   const zhBase = zhPath.split(/[\\/]/).pop();

@@ -16,10 +16,8 @@
 | 它指出的 | 核实 | 处置 |
 |---|---|---|
 | setFullAccess 没校验调用者，只是"目前只有 popup 在调" | 属实 | 加 sender 白名单 + 负向测试 |
-| 黑名单只管当前 URL、不管操作效果；
-avigate 不校验目标 | 属实 | 窄授权改 origin 级委托：
-avigate/open 事前拒绝 |
-| "不可见不给 ref"只成立于快照阶段，执行层仍可直接找 DOM | 属实（TOCTOU） | 执行层 esolveTarget：可见性 + 快照签名复核 |
+| 黑名单只管当前 URL、不管操作效果；navigate 不校验目标 | 属实 | 窄授权改 origin 级委托：navigate/open 事前拒绝 |
+| "不可见不给 ref"只成立于快照阶段，执行层仍可直接找 DOM | 属实（TOCTOU） | 执行层 resolveTarget：可见性 + 快照签名复核 |
 | MAIN world eval 让 origin 隔离失效 | 属实 | 窄授权下禁用 MAIN eval |
 | 任意本地进程可伪装扩展连 /ws；/cmd 等无认证 | 属实 | 本地控制面能力令牌（HTTP + WS） |
 | 端口被占用时 native host 会 relay 给"谁占着端口" | 属实，最严重 | 令牌不匹配即失败关闭（拒绝 relay 并退出） |
