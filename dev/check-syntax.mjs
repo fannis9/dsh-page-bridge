@@ -58,3 +58,37 @@ let fragments = [];
 try { fragments = readdirSync(fragDir).filter((f) => f.endsWith('.js')); } catch { /* 目录不存在 */ }
 const moduleLike = fragments.filter((f) => spawnSync(process.execPath, ['--check', join(fragDir, f)], { stdio: 'ignore' }).status === 0);
 console.log(`（page-op 片段 ${fragments.length} 个，其中能当独立模块解析的 ${moduleLike.length} 个：${moduleLike.join(', ') || '无'}）`);
+
+// ---------------------------------------------------------------- 可移植性 lint
+// dev/ 脚本会在 CI 的 Linux runner 上跑，但开发机是 Windows。曾经有两处写成
+//   new URL('..', import.meta.url).pathname.replace(/^\//, '').replaceAll('/', '\\')
+// 在 Linux 上路径变成 `home\runner\...`，脚本必然失败（log-rotation 与 ws-fuzz 都栽在这上面）。
+// 用 fileURLToPath 才是正解 —— 这里直接静态拦下这种写法，避免同类问题再次进 CI。
+const offenders = [];
+const lint = (dir) => {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name)) lint(join(dir, entry.name));
+      continue;
+    }
+    if (!/\.(mjs|js)$/.test(entry.name)) continue;
+    const rel = relative(ROOT, join(dir, entry.name));
+    // 跳过 lint 自己（它当然包含这些模式），并跳过注释行（说明文字里可能会引用这种写法）。
+    if (rel === join('dev', 'check-syntax.mjs')) continue;
+    const text = readFileSync(join(dir, entry.name), 'utf8');
+    for (const [index, line] of text.split('\n').entries()) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
+      const windowsOnlyPath = /new URL\([^)]*import\.meta\.url[^)]*\)\.pathname/.test(line)
+        || line.includes("replaceAll('/',");   // 把 URL 路径硬改成 Windows 反斜杠
+      if (windowsOnlyPath) offenders.push(`${rel}:${index + 1}`);
+    }
+  }
+};
+lint(join(ROOT, 'dev'));
+if (offenders.length) {
+  console.log('\n✗ 发现 Windows 专用路径写法（CI 是 Linux，请改用 fileURLToPath）：');
+  for (const item of offenders) console.log(`  ${item}`);
+  process.exit(1);
+}
+console.log('✓ 可移植性 lint 通过（没有 .pathname + 反斜杠 的路径写法）');

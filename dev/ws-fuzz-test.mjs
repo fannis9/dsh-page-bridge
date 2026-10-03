@@ -6,8 +6,10 @@ import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/^\//, '').replaceAll('/', '\\');
+// 同 log-rotation-test：不要用 `.pathname` + 反斜杠替换（Windows 专用），改用跨平台的 fileURLToPath。
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BRIDGE = join(ROOT, 'bridge.mjs');
 const workDir = mkdtempSync(join(tmpdir(), 'bridge-ws-fuzz-'));
 const tokenFile = join(workDir, 'token');

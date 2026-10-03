@@ -4,8 +4,11 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname.replace(/^\//, '').replaceAll('/', '\\');
+// 必须用 fileURLToPath：曾经写成 `.pathname.replace(/^\//,'').replaceAll('/','\\')`（Windows 专用），
+// 在 CI 的 Linux runner 上会变成 `home\runner\...`，桥接根本起不来 —— 该测试因此在 CI 上必挂。
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BRIDGE = join(ROOT, 'bridge.mjs');
 const workDir = mkdtempSync(join(tmpdir(), 'bridge-log-'));
 const logFile = join(workDir, 'events.jsonl');
