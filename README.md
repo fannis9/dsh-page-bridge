@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 # DSH Page Bridge — 让你浏览的页面可被 DSH 读取与操作
 
 [![tests](https://github.com/fannis9/dsh-page-bridge/actions/workflows/tests.yml/badge.svg)](https://github.com/fannis9/dsh-page-bridge/actions/workflows/tests.yml)
@@ -307,7 +309,7 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
   反例保留：`display: none` / `opacity: 0` / `aria-hidden` 里的内容依然会被正确排除；
   而且**自身不可见的元素不会分配 ref**——否则模型会拿到指向"看不见的按钮"的 ref（例如隐藏的
   「Delete this repository」确认按钮），点下去照样会触发。
-  自检：`dev/snapshot-probe.mjs` 的夹具同时造了这三类容器**和两个反例**（见输出的「隐形容器自检」）。
+  自检：`dev/snapshot-probe.mjs` 的夹具同时造了这四类容器**和两个反例**（见输出的「隐形容器自检」）。
 - **截图要窗口在前台**：`page_screenshot` 会先检查目标窗口是否聚焦/最小化，不在前台就**立刻**报错
   （`captureVisibleTab` 在后台窗口上会卡住）；MCP 侧超时也收紧到 15 秒。只要读内容就别用截图。
 - **合成按键带真实 `keyCode`/`which`**：`page_key {key:"Enter"}`（CLI：`key Enter [选择器]`）支持
