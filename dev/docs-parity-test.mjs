@@ -91,6 +91,15 @@ for (const [zhPath, enPath] of PAIRS) {
   const enRows = count(en, /^\|/gm);
   check(`  表格行数一致（中 ${zhRows} / 英 ${enRows}）`, zhRows === enRows);
 
+  // 逐行比较表格"列结构"：每一行的竖线数量序列必须相同 —— 抓"译文多一列/少一列"。
+  const rowShape = (text) => (text.match(/^\|.*$/gm) ?? []).map((line) => (line.match(/\|/g) ?? []).length);
+  const zhShape = rowShape(zh);
+  const enShape = rowShape(en);
+  const shapeDiffs = zhShape
+    .map((v, i) => (v === enShape[i] ? null : `第 ${i + 1} 行 中 ${v} 竖线 / 英 ${enShape[i] ?? '-'}`))
+    .filter(Boolean);
+  check(`  表格列结构一致（中 ${zhShape.length} 行）`, zhShape.length === enShape.length && shapeDiffs.length === 0, shapeDiffs.slice(0, 4).join(' | '));
+
   // 只排除"指向对方那一份"的语言切换链接；兄弟目录下写的是裸文件名，所以要连 basename 一起排除。
   const zhBase = zhPath.split(/[\\/]/).pop();
   const enBase = enPath.split(/[\\/]/).pop();
