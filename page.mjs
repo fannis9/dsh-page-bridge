@@ -5,8 +5,8 @@
  *   node page.mjs status
  *   node page.mjs tabs
  *   node page.mjs state [--json] [--max-text 12000]
- *   node page.mjs text [--max 20000]
- *   node page.mjs html [--max 60000]
+ *   node page.mjs text [--selector <selector>] [--max 20000]
+ *   node page.mjs html [--selector <selector>] [--max 2000000] [--max-nodes 5000]
  *   node page.mjs eval "<js expression>" [--world MAIN]
  *   node page.mjs click "<selector|text=登录>"
  *   node page.mjs type "<selector>" "<text>" [--submit]
@@ -17,6 +17,7 @@
  *   node page.mjs navigate <url> | activate <tabId> | close <tabId>
  *   node page.mjs events [--limit 30]
  *   node page.mjs wait "<selector>" [--timeout 15000]
+ *   node page.mjs count "<selector>"
  *
  * Global flags: --tab <id> --port <n> --wait <ms> (wait for the extension) --timeout <ms> --json
  */
@@ -161,7 +162,7 @@ function printState(state) {
 }
 
 if (!command || command === 'help' || flags.help) {
-  console.log('commands: status | token | grant | tabs | state | snapshot | text | html | eval | click | type | key | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
+  console.log('commands: status | token | grant | tabs | state | snapshot | text | html | count | eval | click | type | key | select | scroll | highlight | shot | open | navigate | activate | close | events | wait | stop');
   process.exit(command ? 0 : 1);
 }
 
@@ -218,6 +219,7 @@ try {
       selector: flags.selector,
       maxNodes: Number(flags['max-nodes'] ?? 500),
       maxDepth: Number(flags['max-depth'] ?? 14),
+      maxName: Number(flags['max-name'] ?? 120),
     });
     if (snap?.ok === false) throw new Error(snap.reason ?? '快照失败');
     if (flags.json) { out(snap); } else {
@@ -234,14 +236,19 @@ try {
     // 注意：正文必须先完整取回再截尾，否则截尾截的是被前台截断过的内容。
     const tail = Number(flags.tail ?? 0);
     const want = tail > 0 ? Math.max(Number(flags.max ?? 0), tail + 20000) : Number(flags.max ?? 20000);
-    const res = await cmd('text', { max: want });
+    const res = await cmd('text', { max: want, selector: flags.selector });
     const full = res.text ?? '';
     console.log(tail > 0 ? full.slice(-tail) : full);
     if (res.length > full.length) console.log(`\n... 已截断（原长 ${res.length} 字符，用 --max 调大）`);
     else if (tail > 0 && full.length > tail) console.log(`\n... 只显示末尾 ${tail} 字符（共 ${full.length} 字符）`);
   } else if (command === 'html') {
-    const res = await cmd('html', { max: Number(flags.max ?? 60000) });
+    const res = await cmd('html', {
+      max: Number(flags.max ?? 2_000_000),
+      maxNodes: Number(flags['max-nodes'] ?? 5000),
+      selector: flags.selector,
+    });
     console.log(res.html ?? '');
+    if (res.truncated) console.error(`[page.mjs] HTML 已截断：${res.nodes} 个节点 / ${res.length} 字符`);
   } else if (command === 'eval') {
     out(await cmd('eval', { code: rest[1] ?? '', ...(flags.world ? { world: flags.world } : {}) }));
   } else if (command === 'click') {
@@ -258,6 +265,8 @@ try {
     out(await cmd('scroll', rest[1] ? { selector: rest[1] } : { by: Number(flags.by ?? 800) }));
   } else if (command === 'highlight') {
     out(await cmd('highlight', { selector: rest[1] ?? '' }));
+  } else if (command === 'count') {
+    out(await cmd('count', { selector: rest[1] ?? flags.selector }));
   } else if (command === 'shot') {
     const target = resolve(rest[1] ?? join(dirname(BRIDGE), 'var', 'shots', `shot-${Date.now()}.png`));
     const res = await cmd('shot', {});

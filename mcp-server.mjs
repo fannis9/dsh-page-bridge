@@ -303,6 +303,7 @@ const tools = [
         selector: { type: 'string', description: '只抓该 CSS 选择器命中的子树（页面很大时很有用，如 #user-repositories-list）' },
         maxNodes: { type: 'number', description: '最多输出节点数，默认 500' },
         maxDepth: { type: 'number', description: '最大深度，默认 14' },
+        maxName: { type: 'number', description: '节点名称/文本最大字符数，默认 120' },
       },
       additionalProperties: false,
     },
@@ -312,6 +313,7 @@ const tools = [
         selector: args.selector,
         maxNodes: args.maxNodes,
         maxDepth: args.maxDepth,
+        maxName: args.maxName,
       }, 30_000);
       if (snap?.ok === false) throw new Error(snap.reason ?? '快照失败');
       return snapshotBlock(snap);
@@ -340,11 +342,57 @@ const tools = [
       type: 'object',
       properties: {
         tabId: { type: 'number' },
+        selector: { type: 'string', description: '只读取该 CSS/ref/text= 子树，且包含其中的 open shadow root 文本' },
         max: { type: 'number', description: '最大字符数，默认 20000' },
       },
       additionalProperties: false,
     },
-    async run(args) { return json(await cmd('text', { tabId: args.tabId, max: args.max })); },
+    async run(args) { return json(await cmd('text', { tabId: args.tabId, selector: args.selector, max: args.max })); },
+  },
+  {
+    name: 'page_html',
+    description: '读取当前页面或指定子树的有界 HTML（包含 open shadow root），超出节点/字节上限会返回 truncated=true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tabId: { type: 'number' },
+        selector: { type: 'string', description: '只序列化该 CSS/ref/text= 子树' },
+        max: { type: 'number', description: '最大字符数，默认 2000000，上限 2000000' },
+        maxNodes: { type: 'number', description: '最大节点数，默认 5000，上限 20000' },
+      },
+      additionalProperties: false,
+    },
+    async run(args) { return json(await cmd('html', { tabId: args.tabId, selector: args.selector, max: args.max, maxNodes: args.maxNodes })); },
+  },
+  {
+    name: 'page_count',
+    description: '统计当前页面或指定 CSS 选择器在 composed/shadow DOM 中匹配的节点数。',
+    inputSchema: {
+      type: 'object',
+      properties: { tabId: { type: 'number' }, selector: { type: 'string' } },
+      required: ['selector'],
+      additionalProperties: false,
+    },
+    async run(args) { return json(await cmd('count', { tabId: args.tabId, selector: args.selector })); },
+  },
+  {
+    name: 'page_wait',
+    description: '等待当前页面出现匹配 selector/ref/text= 的元素。',
+    inputSchema: {
+      type: 'object',
+      properties: { tabId: { type: 'number' }, selector: { type: 'string' }, timeout: { type: 'number', description: '超时毫秒，默认 15000' } },
+      required: ['selector'],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const deadline = Date.now() + Math.max(0, Math.min(Number(args.timeout ?? 15_000) || 15_000, 120_000));
+      for (;;) {
+        const result = await cmd('wait', { tabId: args.tabId, selector: args.selector }, 10_000);
+        if (result?.ok) return json(result);
+        if (Date.now() >= deadline) return json({ ok: false, selector: args.selector, timeout: true });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    },
   },
   {
     name: 'page_tabs',

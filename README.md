@@ -25,7 +25,7 @@
 - 桥接：`bridge.mjs`（零依赖，自带 WebSocket 与 native messaging 两种帧实现；闲置自动退出）
 - 注册工具：`register-host.mjs`（用户级注册/查看/卸载 native host，可回退）
 - 命令行：`page.mjs`（按需拉起桥接）
-- MCP 服务端：`mcp-server.mjs`（把桥接包成 19 个 MCP 工具）
+- MCP 服务端：`mcp-server.mjs`（把桥接包成 22 个 MCP 工具）
 - DSH 插件：`dsh-plugin/`（profile bundle，让新会话自带 `mcp__page-bridge__*`）
 - 自检/调试：`mock-extension.mjs`（假扩展，无浏览器也能验证链路）、`smoke-mcp.mjs`（MCP 层冒烟测试）、`dev/`：
   - `snapshot-probe.mjs` 快照算法探针（在真实 Chromium 里跑扩展里的同一段代码）
@@ -293,6 +293,10 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
 - **可以只抓一块区域**：`page_snapshot {selector:"#user-repositories-list"}`（CLI：`snapshot --selector form`）
   只返回该 CSS 选择器命中的子树——GitHub 这类巨型页面用它能把噪声从几百个节点降到十几个。
   选择器不存在会明确报错，不会静默返回整页。
+- **长文本/HTML 也支持子树读取**：`page_text {selector:"#target"}` 会读取该子树并穿透其中的 open shadow root；
+  `page_html` 也支持 `selector`，并以 `max` 字符与 `maxNodes` 双重硬上限返回 `truncated`，避免整页序列化卡住。
+  CLI 对应 `text --selector ...`、`html --selector ... --max-nodes ...`。
+- **补齐便宜的 DOM 工具**：`page_count` 统计 composed/shadow DOM 节点，`page_wait` 等待 selector/ref/text= 出现。
 - **能看穿"隐形容器"**：快照、`selector`、`text=`、`count` 都会走进这些容器，而不是把整棵子树剪掉：
   1. **open shadow root**（web component；顺带一提，翻译类扩展也会往页面里注入 shadow root）；
   2. **`display: contents`**：自身 `getBoundingClientRect()` 是 0×0，但子节点正常布局——
@@ -410,7 +414,7 @@ edge://extensions → 左下角打开「开发人员模式」→「加载解压�
    于是"刚才那次重载到底生效没有"是一个字段就能回答的问题，不必再靠 `since` 时间戳加试探命令去反推。
 8. **WS / native 单帧上限 8 MB**：声称超大长度的帧直接断连，不再无限缓冲（本机 DoS）；
    WebSocket 客户端帧还必须 masked，分片和保留位会被拒绝。
-9. **运行期日志有边界**：`events.jsonl` 默认最多 5 MB，超过后从新文件开始记录；落盘 URL 会移除 query/hash，
+9. **运行期日志有边界**：`events.jsonl` 默认最多 5 MB，超过后保留文件尾部的最新历史再继续记录；落盘 URL 会移除 query/hash，
    以免把搜索词或一次性 token 长期写入日志。可用 `--max-log-bytes` 或 `PAGE_BRIDGE_MAX_LOG_BYTES` 调整上限。
 10. **策略模块缺失时 fail-closed 且可诊断**：`policy.js` 若没加载成功，`lastError` 会明确写出
     "policy.js 未加载…"（弹窗可见），并且**不会去建立连接**；之后任何调用得到的是这条明确错误，
@@ -468,12 +472,13 @@ GitHub Actions 里另有手动触发的 [`.github/workflows/browser-e2e.yml`](.g
 ## DSH 插件（新对话自动可用）
 
 `dsh-plugin/` 是一个 profile bundle，把本桥接挂成 **MCP 工具**，于是**每个会话**都自带
-`mcp__page-bridge__*`（**19 个**），不需要先解释路径：
+`mcp__page-bridge__*`（**22 个**），不需要先解释路径：
 
 | 工具 | 作用 |
 |---|---|
 | `page_snapshot` | **ARIA 快照 + `[ref=eN]`**：最常用的"看清楚现在页面上有什么"；变更类工具执行后会自动附带一份 |
-| `page_state` / `page_text` / `page_tabs` / `page_events` | 页面摘要 / 全文 / 标签页 / 浏览轨迹 |
+| `page_state` / `page_text` / `page_html` / `page_count` / `page_wait` | 页面摘要 / 子树全文 / 有界 HTML / 节点统计 / 等待元素 |
+| `page_tabs` / `page_events` | 标签页 / 浏览轨迹 |
 | `page_click` / `page_type` / `page_key` / `page_select` / `page_scroll` / `page_highlight` | 操作页面（`page_key` 发带 `keyCode` 的真实按键；高亮会在你屏幕上闪一下） |
 | `page_eval` / `page_navigate` / `page_open` / `page_close` / `page_screenshot` | 执行 JS / 跳转 / 新开标签页 / 关标签 / 截图 |
 | `page_use_browser` / `page_status` / `bridge_stop` | 多浏览器时固定目标 / 连接状态 / 停掉桥接（下次自动重启） |

@@ -13,7 +13,9 @@ let loadError = null;
 let chromium = null;
 for (const root of candidates) {
   try {
-    const require = createRequire(pathToFileURL(`${root}/`).href);
+    // createRequire wants a file URL, not a directory URL.  The latter is fragile on
+    // Windows when the root comes from DSH_PROFILE_DIR and contains backslashes.
+    const require = createRequire(pathToFileURL(join(root, 'noop.js')).href);
     const runtime = require('playwright-core');
     if (runtime?.chromium) {
       chromium = runtime.chromium;

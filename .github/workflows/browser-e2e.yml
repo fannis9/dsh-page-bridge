@@ -1,9 +1,11 @@
 name: browser-e2e
 
 # Real-browser coverage is intentionally separate from the fast browser-free job.
-# It is manual because unpacked-extension flags differ across branded Chromium builds.
+# It downloads Playwright's pinned Chromium and runs daily plus on demand.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '30 18 * * *'
 
 jobs:
   chromium:
@@ -16,18 +18,22 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Install Playwright runtime
-        run: npm install --no-save playwright-core
+      - name: Install Playwright runtime and bundled Chromium
+        run: |
+          npm install --no-save playwright
+          npx playwright install chromium
 
-      - name: Register Edge native host
-        run: node register-host.mjs register --browser edge
+      - name: Register Chrome native host
+        run: node register-host.mjs register --browser chrome
 
       - name: Run browser fixture tests
         run: npm run test:browser:fixtures
 
-      - name: Run Edge native messaging E2E
-        run: npm run test:browser:native
+      - name: Run bundled Chromium native messaging E2E
+        env:
+          DSH_USE_BUNDLED_CHROMIUM: '1'
+        run: npm run test:browser:native -- --browser chrome
 
-      - name: Remove Edge native host registration
+      - name: Remove Chrome native host registration
         if: always()
-        run: node register-host.mjs unregister --browser edge
+        run: node register-host.mjs unregister --browser chrome

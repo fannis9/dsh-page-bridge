@@ -10,12 +10,11 @@
  * spawned the host, and the bridge reports a client with via === 'native'. It also prints the
  * ID the browser actually assigned, which is what must appear in allowed_origins.
  *
- * ⚠️ LIMITATION: official Chrome 137+ removed --load-extension / --disable-extensions-except
- * (see https://github.com/microsoft/playwright/issues/37017), so this test SKIPS on a
- * branded Chrome build. Edge still honours the flags, so `--browser edge` works.
+ * CI uses Playwright's bundled Chromium.  A system executable can still be selected for
+ * local verification with DSH_BROWSER_EXECUTABLE (or by using --browser edge).
  *
- *   node dev/native-e2e-test.mjs                 # chrome (may skip on Chrome 137+)
- *   node dev/native-e2e-test.mjs --browser edge  # Edge — expected to run for real
+ *   DSH_USE_BUNDLED_CHROMIUM=1 node dev/native-e2e-test.mjs --browser chrome
+ *   node dev/native-e2e-test.mjs --browser edge  # local system Edge, when supported
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
@@ -26,6 +25,7 @@ import { chromium } from './playwright-runtime.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = join(HERE, '..');
 const EXTENSION = join(PROJECT, 'extension');
+const MANIFEST_VERSION = JSON.parse(readFileSync(join(EXTENSION, 'manifest.json'), 'utf8')).version;
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = argv.indexOf(`--${name}`);
@@ -45,7 +45,9 @@ const CANDIDATES = {
   chrome: ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe'],
   edge: ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe'],
 };
-const EXECUTABLE = [process.env.DSH_BROWSER_EXECUTABLE, ...(CANDIDATES[BROWSER] ?? [])].find((p) => p && existsSync(p));
+const SYSTEM_EXECUTABLE = [process.env.DSH_BROWSER_EXECUTABLE, ...(CANDIDATES[BROWSER] ?? [])].find((p) => p && existsSync(p));
+const USE_BUNDLED = process.env.DSH_USE_BUNDLED_CHROMIUM === '1';
+const EXECUTABLE = USE_BUNDLED ? null : SYSTEM_EXECUTABLE;
 const PROFILE = join(PROJECT, 'var', `pw-native-profile-${BROWSER}`);
 const INTERNALS = BROWSER === 'edge' ? 'edge://' : 'chrome://';
 
@@ -56,17 +58,17 @@ const check = (label, ok, detail = '') => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-if (!EXECUTABLE) {
-  console.error(`找不到 ${BROWSER} 的可执行文件（用 DSH_BROWSER_EXECUTABLE 指定）`);
+if (!EXECUTABLE && !USE_BUNDLED) {
+  console.error(`找不到 ${BROWSER} 的可执行文件（用 DSH_BROWSER_EXECUTABLE 指定，或设置 DSH_USE_BUNDLED_CHROMIUM=1）`);
   process.exit(2);
 }
 
 rmSync(PROFILE, { recursive: true, force: true });
-console.log(`浏览器   : ${BROWSER} → ${EXECUTABLE}`);
+console.log(`浏览器   : ${BROWSER} → ${EXECUTABLE ?? 'Playwright bundled Chromium'}`);
 console.log(`扩展目录 : ${EXTENSION}\n`);
 
 const context = await chromium.launchPersistentContext(PROFILE, {
-  executablePath: EXECUTABLE,
+  ...(EXECUTABLE ? { executablePath: EXECUTABLE } : {}),
   headless: false,
   args: [
     `--disable-extensions-except=${EXTENSION}`,
@@ -101,11 +103,10 @@ try {
   console.log(`${BROWSER} 已加载扩展: ${listed.length ? JSON.stringify(listed) : '(空！扩展没被加载)'}\n`);
 
   if (listed.length === 0) {
-    console.log(`SKIP: 该 ${BROWSER} 构建不允许 --load-extension（官方 Chrome 137+ 已移除，Edge 仍然允许），`);
-    console.log('      试 `--browser edge`，或在真实浏览器里重载扩展后看是否有 --native 进程被拉起。');
+    check(`${BROWSER} 已加载未打包扩展`, false, '扩展列表为空；浏览器 E2E 不能以 SKIP 伪装成功');
     await context.close().catch(() => {});
     rmSync(PROFILE, { recursive: true, force: true });
-    process.exit(0);
+    process.exit(1);
   }
 
   let worker = context.serviceWorkers()[0] ?? null;
@@ -192,6 +193,12 @@ try {
   check('桥接看到 via=native 的客户端',
     Array.isArray(status?.clients) && status.clients.some((c) => c.via === 'native'),
     JSON.stringify(status));
+  const liveClient = status?.clients?.find((c) => c.label === 'chrome-extension');
+  check('桥接报告的 extensionVersion 与 manifest 一致', status?.extensionVersion === MANIFEST_VERSION,
+    JSON.stringify({ expected: MANIFEST_VERSION, actual: status?.extensionVersion }));
+  check('native client version 与 manifest 一致', liveClient?.version === MANIFEST_VERSION,
+    JSON.stringify({ expected: MANIFEST_VERSION, actual: liveClient?.version }));
+  check('native client instance 是 16 位标识', /^[0-9a-f]{16}$/i.test(liveClient?.instance ?? ''), JSON.stringify(liveClient));
 
   // Chrome must own the host process: a bridge.mjs --native child of chrome.exe.
   if (process.platform === 'win32') {
@@ -205,7 +212,8 @@ try {
       out = execFileSync('pwsh', ['-NoProfile', '-Command', script], { stdio: 'pipe' }).toString().trim();
     } catch { /* ignore */ }
     console.log(`native host 进程: ${out || '(无)'}\n`);
-    check('存在由 chrome.exe 拉起的 --native 进程', /chrome\.exe/i.test(out), out || '没有找到');
+    const parentPattern = USE_BUNDLED ? /(?:chrome|chromium|msedge)\.exe/i : /chrome\.exe/i;
+    check('存在由 Chromium 浏览器拉起的 --native 进程', parentPattern.test(out), out || '没有找到');
   }
 } finally {
   await context.close().catch(() => {});

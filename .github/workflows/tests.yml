@@ -32,8 +32,17 @@ jobs:
       - name: service worker 状态机（假 chrome API，11 个场景 + 提权守卫 + origin 隔离）
         run: node dev/sw-load-test.mjs
 
+      - name: PAGE_OP region 结构护栏
+        run: node dev/page-op-regions-test.mjs
+
       - name: 本地控制面能力令牌（HTTP/WS 认证 + relay 失败关闭）
         run: node dev/bridge-auth-test.mjs
+
+      - name: 运行期日志轮转
+        run: node dev/log-rotation-test.mjs
+
+      - name: WebSocket 畸形帧 fuzz
+        run: node dev/ws-fuzz-test.mjs
 
       - name: 命令队列 / 实例路由 / WS 帧上限
         run: node dev/bridge-queue-test.mjs

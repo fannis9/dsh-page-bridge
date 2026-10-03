@@ -12,10 +12,14 @@
     "check": "node --check bridge.mjs && node --check mcp-server.mjs && node --check page.mjs && node --check register-host.mjs && node --check extension/background.js && node --check extension/policy.js && node --check extension/popup.js && node --check dev/playwright-runtime.mjs",
     "test:policy": "node dev/grant-policy-test.mjs",
     "test:auth": "node dev/bridge-auth-test.mjs",
+    "test:log": "node dev/log-rotation-test.mjs",
+    "test:fuzz": "node dev/ws-fuzz-test.mjs",
     "test:queue": "node dev/bridge-queue-test.mjs",
     "test:native": "node dev/native-framing-test.mjs",
     "test:mcp": "node smoke-mcp.mjs",
-    "test:browser:fixtures": "node dev/snapshot-probe.mjs && node dev/target-resolve-test.mjs && node dev/key-dispatch-test.mjs && node dev/make-popup-preview.mjs",
-    "test:browser:native": "node dev/native-e2e-test.mjs --browser edge"
+    "build:page-op": "node dev/build-page-op.mjs",
+    "test:page-op-regions": "node dev/page-op-regions-test.mjs",
+    "test:browser:fixtures": "node dev/build-page-op.mjs && node dev/page-op-regions-test.mjs && node dev/page-read-test.mjs && node dev/snapshot-probe.mjs && node dev/target-resolve-test.mjs && node dev/key-dispatch-test.mjs && node dev/make-popup-preview.mjs",
+    "test:browser:native": "node dev/native-e2e-test.mjs"
   }
 }

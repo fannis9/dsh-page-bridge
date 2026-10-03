@@ -515,6 +515,102 @@ function PAGE_OP(payload) {
     });
   }
 
+  // #region page-read
+  const readRoot = (selector) => {
+    if (!selector) return document.body ?? document.documentElement;
+    return find(selector);
+  };
+
+  /** 块级元素：边界要还原成换行，否则整页文本会塌成一行（`innerText` 也是这个语义）。 */
+  const BLOCK_TAGS = new Set(['ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIALOG', 'DIV',
+    'DL', 'DT', 'FIELDCAP', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM', 'H1', 'H2', 'H3', 'H4', 'H5',
+    'H6', 'HEADER', 'HGROUP', 'HR', 'LI', 'MAIN', 'NAV', 'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE',
+    'TBODY', 'TD', 'TFOOT', 'TH', 'THEAD', 'TR', 'UL']);
+
+  /** Read a composed subtree without losing text rendered inside open shadow roots. */
+  const composedText = (root) => {
+    const pieces = [];
+    const walk = (node) => {
+      if (!node) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parent = node.parentElement;
+        if (!parent || visible(parent)) pieces.push(node.nodeValue ?? '');
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE
+        && node.nodeType !== Node.DOCUMENT_NODE
+        && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = node.tagName.toLowerCase();
+        if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'template') return;
+        if (tag === 'br') { pieces.push('\n'); return; }
+        const block = BLOCK_TAGS.has(node.tagName);
+        if (block) pieces.push('\n');
+        // An open shadow tree is the rendered child tree of its host. Do not append the
+        // host's light DOM as well, or slotted/component text would be duplicated.
+        if (node.shadowRoot) walk(node.shadowRoot);
+        else for (const child of node.childNodes ?? []) walk(child);
+        if (block) pieces.push('\n');
+        return;
+      }
+      for (const child of node.childNodes ?? []) walk(child);
+    };
+    walk(root);
+    return clean(pieces.join(' ').replace(/[ \t]*\n[ \t]*/g, '\n'));
+  };
+
+  const escapeHtml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  /** Bounded composed-tree HTML serialization; never builds an unbounded full-page string. */
+  const boundedHtml = (root, maxBytes, maxNodes) => {
+    const state = { chunks: [], length: 0, nodes: 0, truncated: false };
+    const append = (value) => {
+      if (state.truncated || !value) return;
+      const text = String(value);
+      const room = maxBytes - state.length;
+      if (room <= 0) { state.truncated = true; return; }
+      if (text.length > room) {
+        state.chunks.push(text.slice(0, room));
+        state.length += room;
+        state.truncated = true;
+        return;
+      }
+      state.chunks.push(text);
+      state.length += text.length;
+    };
+    const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+    const walk = (node) => {
+      if (state.truncated || !node) return;
+      if (node.nodeType === Node.TEXT_NODE) { append(escapeHtml(node.nodeValue)); return; }
+      if (node.nodeType === Node.COMMENT_NODE) { append(`<!--${node.data}-->`); return; }
+      if (node.nodeType !== Node.ELEMENT_NODE
+        && node.nodeType !== Node.DOCUMENT_NODE
+        && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) return;
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        for (const child of node.childNodes ?? []) walk(child);
+        return;
+      }
+      state.nodes += 1;
+      if (state.nodes > maxNodes) { state.truncated = true; return; }
+      const shell = node.cloneNode(false).outerHTML;
+      const tag = node.tagName.toLowerCase();
+      const closeAt = shell.lastIndexOf('</');
+      append(closeAt >= 0 ? shell.slice(0, closeAt) : shell);
+      if (VOID.has(tag)) return;
+      const childRoot = node.shadowRoot;
+      if (childRoot) {
+        append(`<!-- shadow of <${tag}> -->`);
+        for (const child of childRoot.childNodes ?? []) walk(child);
+      } else {
+        for (const child of node.childNodes ?? []) walk(child);
+      }
+      append(`</${tag}>`);
+    };
+    walk(root);
+    return { html: state.chunks.join(''), length: state.length, nodes: state.nodes, truncated: state.truncated };
+  };
+
   if (k === 'state') {
     return {
       url: location.href,
@@ -539,23 +635,20 @@ function PAGE_OP(payload) {
   }
 
   if (k === 'text') {
-    const t = clean(document.body?.innerText ?? '');
+    const root = readRoot(args.selector);
+    if (!root) return { ok: false, reason: `找不到元素：${args.selector}` };
+    const t = composedText(root);
     return { url: location.href, title: document.title, length: t.length, text: t.slice(0, args.max ?? 20000) };
   }
 
   if (k === 'html') {
-    // outerHTML does not include shadow content, so append any shadow roots found — that is
-    // usually where the interesting markup lives on component-heavy sites.
-    let html = document.documentElement.outerHTML;
-    const shadowParts = [];
-    for (const root of deepRoots()) {
-      if (root === document) continue;
-      const host = root.host;
-      shadowParts.push(`<!-- shadow of <${host?.tagName?.toLowerCase() ?? '?'}> -->\n${root.innerHTML}`);
-    }
-    if (shadowParts.length) html += `\n<!-- ===== shadow roots (${shadowParts.length}) ===== -->\n${shadowParts.join('\n')}`;
-    return { url: location.href, length: html.length, html: html.slice(0, args.max ?? 60000) };
+    const root = args.selector ? readRoot(args.selector) : document.documentElement;
+    if (!root) return { ok: false, reason: `找不到元素：${args.selector}` };
+    const maxBytes = Math.max(1024, Math.min(Number(args.max ?? 2_000_000) || 2_000_000, 2_000_000));
+    const maxNodes = Math.max(1, Math.min(Number(args.maxNodes ?? 5000) || 5000, 20_000));
+    return { url: location.href, selector: args.selector ?? null, maxBytes, maxNodes, ...boundedHtml(root, maxBytes, maxNodes) };
   }
+  // #endregion page-read
 
   if (k === 'eval') {
     // NOTE: on pages with a strict CSP some worlds silently refuse eval and return
@@ -1071,9 +1164,9 @@ async function handle(name, args) {
         maxName: args.maxName,
       }, args.world);
     case 'text':
-      return inject(tabId, 'text', { max: args.max }, args.world);
+      return inject(tabId, 'text', { max: args.max, selector: args.selector }, args.world);
     case 'html':
-      return inject(tabId, 'html', { max: args.max }, args.world);
+      return inject(tabId, 'html', { max: args.max, maxNodes: args.maxNodes, selector: args.selector }, args.world);
     case 'eval': {
       // MAIN-world eval 是任意 JS 能力：在窄授权下它能让 origin 隔离当场失效
       // （location.href = ...、window.open(...) 都绕过了 navigate/open 的检查）。

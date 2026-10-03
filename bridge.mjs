@@ -33,6 +33,8 @@ import { fileURLToPath } from 'node:url';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 /** 单帧上限：超限即视为协议攻击/坏客户端，断连而不是无限缓冲。 */
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_WS_BUFFER_BYTES = MAX_FRAME_BYTES + 14; // 10-byte length + 4-byte mask
+const WS_FRAME_IDLE_MS = 1_500;
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -164,9 +166,23 @@ function remember(entry) {
     if (logged.tab?.url) logged.tab = { ...logged.tab, url: redactUrl(logged.tab.url) };
     if (logged.state?.url) logged.state = { ...logged.state, url: redactUrl(logged.state.url) };
     const line = `${JSON.stringify(logged)}\n`;
+    const lineBytes = Buffer.byteLength(line);
     const currentSize = statSync(LOG_FILE, { throwIfNoEntry: false })?.size ?? 0;
-    if (currentSize + Buffer.byteLength(line) > MAX_LOG_BYTES) writeFileSync(LOG_FILE, line);
-    else appendFileSync(LOG_FILE, line);
+    if (currentSize + lineBytes > MAX_LOG_BYTES) {
+      // Rotate in place while retaining the newest history.  The previous implementation
+      // replaced the whole file with one line, contradicting the README and losing useful
+      // diagnostics exactly when the log was busiest.
+      const keepBytes = Math.max(0, MAX_LOG_BYTES - lineBytes);
+      let tail = Buffer.alloc(0);
+      if (keepBytes > 0 && currentSize > 0) {
+        const previous = readFileSync(LOG_FILE);
+        tail = previous.subarray(Math.max(0, previous.length - keepBytes));
+        const firstLine = tail.indexOf(0x0a);
+        if (firstLine >= 0) tail = tail.subarray(firstLine + 1);
+      }
+      const next = Buffer.concat([tail, Buffer.from(line)]);
+      writeFileSync(LOG_FILE, next.subarray(Math.max(0, next.length - MAX_LOG_BYTES)));
+    } else appendFileSync(LOG_FILE, line);
   } catch { /* logging must never break the bridge */ }
 }
 
@@ -215,6 +231,7 @@ function encodeControl(opcode) {
 
 function decodeFrames(state, chunk, { requireMask = false } = {}) {
   state.buffer = Buffer.concat([state.buffer, chunk]);
+  if (state.buffer.length > MAX_WS_BUFFER_BYTES) throw new Error('websocket receive buffer too large');
   const messages = [];
   for (;;) {
     const buf = state.buffer;
@@ -602,6 +619,14 @@ server.on('upgrade', (req, socket) => {
   ].join('\r\n'));
 
   const state = { buffer: Buffer.alloc(0) };
+  let partialFrameTimer = null;
+  const refreshPartialFrameTimer = () => {
+    if (partialFrameTimer) { clearTimeout(partialFrameTimer); partialFrameTimer = null; }
+    if (state.buffer.length) {
+      partialFrameTimer = setTimeout(() => dropClient(client, 'incomplete frame timeout'), WS_FRAME_IDLE_MS);
+      partialFrameTimer.unref?.();
+    }
+  };
   const client = {
     label: 'unknown',
     via: relay ? 'relay' : 'ws',
@@ -625,17 +650,21 @@ server.on('upgrade', (req, socket) => {
     touch();
     let messages;
     try { messages = decodeFrames(state, chunk, { requireMask: true }); } catch { dropClient(client, 'bad frame'); return; }
+    refreshPartialFrameTimer();
     for (const frame of messages) {
       if (frame.opcode === 0x8) { dropClient(client, 'closed by peer'); return; }
       if (frame.opcode === 0x9) { try { socket.write(encodeControl(0xA)); } catch { /* ignore */ } continue; }
       if (frame.opcode !== 0x1) continue;
       let msg;
-      try { msg = JSON.parse(frame.payload.toString('utf8')); } catch { continue; }
+      try { msg = JSON.parse(frame.payload.toString('utf8')); } catch { dropClient(client, 'invalid json'); return; }
       handleMessage(client, msg);
     }
   });
 
-  socket.on('close', () => dropClient(client, 'socket closed'));
+  socket.on('close', () => {
+    if (partialFrameTimer) clearTimeout(partialFrameTimer);
+    dropClient(client, 'socket closed');
+  });
   socket.on('error', () => dropClient(client, 'socket error'));
 });
 
