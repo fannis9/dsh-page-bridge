@@ -220,7 +220,17 @@ try {
     const { execFileSync } = await import('node:child_process');
     const script = [
       "$rows = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'bridge\\.mjs' -and $_.CommandLine -match '--native' }",
-      "foreach ($r in $rows) { $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($r.ParentProcessId)\" -ErrorAction SilentlyContinue; \"$($r.ProcessId)|$($p.Name)\" }",
+      "foreach ($r in $rows) {",
+      "  $p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($r.ParentProcessId)\" -ErrorAction SilentlyContinue",
+      "  $name = $p.Name",
+      // Windows 的 native messaging host 由注册表指向的 native-host.cmd 启动，因此桥接的父进程是 cmd.exe，
+      // 这是**预期形状**（不是缺陷）。父进程若是 shell，就再往上一层看真正拉起它的是不是浏览器。
+      "  if ($name -match '^(cmd|conhost|powershell|pwsh)\\.exe$') {",
+      "    $g = Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\" -ErrorAction SilentlyContinue",
+      "    $name = \"$name -> $($g.Name)\"",
+      "  }",
+      "  \"$($r.ProcessId)|$name\"",
+      "}",
     ].join('; ');
     let out = '';
     try {
