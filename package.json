@@ -14,6 +14,7 @@
     "test:auth": "node dev/bridge-auth-test.mjs",
     "test:log": "node dev/log-rotation-test.mjs",
     "test:fuzz": "node dev/ws-fuzz-test.mjs",
+    "test:cli-errors": "node dev/page-cli-error-test.mjs",
     "test:queue": "node dev/bridge-queue-test.mjs",
     "test:native": "node dev/native-framing-test.mjs",
     "test:mcp": "node smoke-mcp.mjs",

@@ -25,10 +25,12 @@ const PAGE_OP = new Function(`return (${source.slice(pageOpStart, pageOpEnd)})`)
 
 const FIXTURE = `<!doctype html><html><body>
 <div id="outside">外部内容，不应被 selector 读到</div>
-<section id="target"><my-shell></my-shell><h2>标题甲</h2><p>段落乙</p><ul><li>条目丙</li><li>条目丁</li></ul><div class="filler">${'重复内容 '.repeat(900)}</div></section>
+<section id="target"><my-shell></my-shell><my-slotted><span slot="title">投影内容</span><span>未投影内容</span></my-slotted><pre id="pre">  foo&#10;    bar</pre><h2>标题甲</h2><p>段落乙</p><ul><li>条目丙</li><li>条目丁</li></ul><div class="filler">${'重复内容😀 '.repeat(900)}</div></section>
 <script>
   const root = document.querySelector('my-shell').attachShadow({ mode: 'open' });
   root.innerHTML = '<article><h2>影子标题</h2><p>影子内容必须被读取</p></article>';
+  const slotRoot = document.querySelector('my-slotted').attachShadow({ mode: 'open' });
+  slotRoot.innerHTML = '<div><slot name="title"></slot></div>';
 </script>
 </body></html>`;
 
@@ -50,6 +52,10 @@ try {
   check('块级结构保留换行（不塌成一行）', text.text.includes('\n'), JSON.stringify(text.text).slice(0, 300));
   check('标题与段落分行', /标题甲\s*\n+\s*段落乙/.test(text.text), JSON.stringify(text.text).slice(0, 300));
   check('列表项分行', /条目丙\s*\n+\s*条目丁/.test(text.text), JSON.stringify(text.text).slice(0, 300));
+  check('slot 投影内容被读取且未重复 light DOM', text.text.includes('投影内容') && !text.text.includes('未投影内容'), JSON.stringify(text.text).slice(0, 500));
+
+  const pre = await page.evaluate(PAGE_OP, { kind: 'text', args: { selector: '#pre', max: 200 } });
+  check('pre 保留缩进与换行', pre.text.includes('  foo') && pre.text.includes('\n    bar'), JSON.stringify(pre.text));
 
   const started = Date.now();
   const html = await page.evaluate(PAGE_OP, { kind: 'html', args: { selector: '#target', max: 1024, maxNodes: 5000 } });
@@ -57,6 +63,7 @@ try {
   check('selector HTML 包含 open shadow root 内容', html.html.includes('影子内容'), html.html.slice(0, 300));
   check('HTML 不包含 selector 外的内容', !html.html.includes('外部内容'), html.html.slice(0, 300));
   check('HTML 有硬上限并报告 truncated', html.truncated === true && html.length <= 1024, JSON.stringify(html).slice(0, 500));
+  check('HTML 上限按 UTF-8 字节计算', html.length === new TextEncoder().encode(html.html).byteLength && html.length <= html.maxBytes, JSON.stringify(html).slice(0, 500));
   check('有界 HTML 在 3 秒内返回', elapsed < 3000, `${elapsed}ms`);
 } finally {
   await browser.close().catch(() => {});

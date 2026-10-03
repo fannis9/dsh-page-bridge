@@ -64,6 +64,33 @@ console.log(`（page-op 片段 ${fragments.length} 个，其中能当独立模�
 //   new URL('..', import.meta.url).pathname.replace(/^\//, '').replaceAll('/', '\\')
 // 在 Linux 上路径变成 `home\runner\...`，脚本必然失败（log-rotation 与 ws-fuzz 都栽在这上面）。
 // 用 fileURLToPath 才是正解 —— 这里直接静态拦下这种写法，避免同类问题再次进 CI。
+//
+// 规则被收窄成 AND：只有当**同时**出现 (a) 从 import.meta.url 取 .pathname 与
+// (b) 把 '/' 替换成以反斜杠开头的串，才算 Windows 专用写法。
+// 收窄的规则最怕"悄悄失效"，所以下面先用固定样本自测这条规则本身（正反两个方向），
+// 再拿它去扫真实文件 —— 样本与真实扫描共用同一个函数，测的就是线上那条规则。
+const isWindowsOnlyPath = (line) => {
+  const urlPath = /new URL\([^)]*import\.meta\.url[^)]*\)\.pathname/.test(line);
+  const windowsPathConversion = /(?:replaceAll|replace)\(\s*['"]\/['"]\s*,\s*['"][^'"]*\\/.test(line);
+  return urlPath && windowsPathConversion;
+};
+
+const LINT_SAMPLES = [
+  // [样本行, 是否应当被判定为违规, 说明]
+  ["const ROOT = new URL('..', import.meta.url).pathname.replace(/^\\//, '').replaceAll('/', '\\\\');", true, '原始危险写法'],
+  ["const p = new URL('..', import.meta.url).pathname.replace('/', '\\\\');", true, 'replace 变体'],
+  ["const value = input.replaceAll('/', '-');", false, '普通字符串替换（曾被误报）'],
+  ["const p = new URL('..', import.meta.url).pathname;", false, '只读 pathname，没有反斜杠转换'],
+  ["const p = new URL(link).pathname.replaceAll('/', '-');", false, '与 import.meta.url 无关'],
+];
+const lintSelfTestFailures = LINT_SAMPLES.filter(([line, shouldFlag]) => isWindowsOnlyPath(line) !== shouldFlag);
+if (lintSelfTestFailures.length) {
+  console.log('\n✗ 可移植性 lint 自测失败（规则与预期不符）：');
+  for (const [line, shouldFlag] of lintSelfTestFailures) console.log(`  ${shouldFlag ? '应报未报' : '不应报却报'}：${line}`);
+  process.exit(1);
+}
+console.log(`✓ 可移植性 lint 自测通过（${LINT_SAMPLES.length} 个样本：${LINT_SAMPLES.filter((s) => s[1]).length} 个应报 / ${LINT_SAMPLES.filter((s) => !s[1]).length} 个不应报）`);
+
 const offenders = [];
 const lint = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -79,9 +106,7 @@ const lint = (dir) => {
     for (const [index, line] of text.split('\n').entries()) {
       const trimmed = line.trim();
       if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) continue;
-      const windowsOnlyPath = /new URL\([^)]*import\.meta\.url[^)]*\)\.pathname/.test(line)
-        || line.includes("replaceAll('/',");   // 把 URL 路径硬改成 Windows 反斜杠
-      if (windowsOnlyPath) offenders.push(`${rel}:${index + 1}`);
+      if (isWindowsOnlyPath(line)) offenders.push(`${rel}:${index + 1}`);
     }
   }
 };

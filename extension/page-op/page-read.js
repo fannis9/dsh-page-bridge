@@ -13,11 +13,22 @@
   /** Read a composed subtree without losing text rendered inside open shadow roots. */
   const composedText = (root) => {
     const pieces = [];
-    const walk = (node) => {
+    const add = (value, preserve = false) => pieces.push({ value: String(value ?? ''), preserve });
+    const normalize = () => {
+      const out = [];
+      for (const piece of pieces) {
+        const value = piece.preserve ? piece.value : piece.value.replace(/[ \t\u00a0]+/g, ' ');
+        const previous = out.at(-1);
+        if (previous && value !== '\n' && previous !== '\n' && !piece.preserve) out.push(' ');
+        out.push(value);
+      }
+      return out.join('').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
+    };
+    const walk = (node, inheritedPre = false) => {
       if (!node) return;
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = node.parentElement;
-        if (!parent || visible(parent)) pieces.push(node.nodeValue ?? '');
+        if (!parent || visible(parent) || parent.assignedSlot) add(node.nodeValue ?? '', inheritedPre);
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE
@@ -26,20 +37,30 @@
       if (node.nodeType === Node.ELEMENT_NODE) {
         const tag = node.tagName.toLowerCase();
         if (tag === 'script' || tag === 'style' || tag === 'noscript' || tag === 'template') return;
-        if (tag === 'br') { pieces.push('\n'); return; }
+        if (tag === 'br') { add('\n'); return; }
+        const whiteSpace = getComputedStyle(node).whiteSpace;
+        const preformatted = inheritedPre || tag === 'pre'
+          || whiteSpace === 'pre' || whiteSpace === 'pre-wrap' || whiteSpace === 'break-spaces';
         const block = BLOCK_TAGS.has(node.tagName);
-        if (block) pieces.push('\n');
+        if (block) add('\n');
+        if (tag === 'slot') {
+          const assigned = node.assignedNodes?.({ flatten: true }) ?? [];
+          const children = assigned.length ? assigned : (node.childNodes ?? []);
+          for (const child of children) walk(child, preformatted);
+          if (block) add('\n');
+          return;
+        }
         // An open shadow tree is the rendered child tree of its host. Do not append the
         // host's light DOM as well, or slotted/component text would be duplicated.
-        if (node.shadowRoot) walk(node.shadowRoot);
-        else for (const child of node.childNodes ?? []) walk(child);
-        if (block) pieces.push('\n');
+        if (node.shadowRoot) walk(node.shadowRoot, preformatted);
+        else for (const child of node.childNodes ?? []) walk(child, preformatted);
+        if (block) add('\n');
         return;
       }
-      for (const child of node.childNodes ?? []) walk(child);
+      for (const child of node.childNodes ?? []) walk(child, inheritedPre);
     };
     walk(root);
-    return clean(pieces.join(' ').replace(/[ \t]*\n[ \t]*/g, '\n'));
+    return normalize();
   };
 
   const escapeHtml = (value) => String(value ?? '')
@@ -48,19 +69,31 @@
   /** Bounded composed-tree HTML serialization; never builds an unbounded full-page string. */
   const boundedHtml = (root, maxBytes, maxNodes) => {
     const state = { chunks: [], length: 0, nodes: 0, truncated: false };
+    const encoder = new TextEncoder();
     const append = (value) => {
       if (state.truncated || !value) return;
       const text = String(value);
       const room = maxBytes - state.length;
       if (room <= 0) { state.truncated = true; return; }
-      if (text.length > room) {
-        state.chunks.push(text.slice(0, room));
-        state.length += room;
-        state.truncated = true;
+      const bytes = encoder.encode(text);
+      if (bytes.byteLength <= room) {
+        state.chunks.push(text);
+        state.length += bytes.byteLength;
         return;
       }
-      state.chunks.push(text);
-      state.length += text.length;
+      let low = 0;
+      let high = text.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (encoder.encode(text.slice(0, mid)).byteLength <= room) low = mid;
+        else high = mid - 1;
+      }
+      if (low > 0 && low < text.length
+        && /[\uD800-\uDBFF]/.test(text[low - 1]) && /[\uDC00-\uDFFF]/.test(text[low])) low -= 1;
+      const prefix = text.slice(0, low);
+      state.chunks.push(prefix);
+      state.length += encoder.encode(prefix).byteLength;
+      state.truncated = true;
     };
     const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
     const walk = (node) => {
@@ -131,4 +164,3 @@
     const maxNodes = Math.max(1, Math.min(Number(args.maxNodes ?? 5000) || 5000, 20_000));
     return { url: location.href, selector: args.selector ?? null, maxBytes, maxNodes, ...boundedHtml(root, maxBytes, maxNodes) };
   }
-  

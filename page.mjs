@@ -253,9 +253,13 @@ try {
       maxNodes: Number(flags['max-nodes'] ?? 5000),
       selector: flags.selector,
     });
-    console.log(res.html ?? '');
-    if (res.ok === false) console.error(`[page.mjs] ${res.reason ?? '读取失败'}`);
-    if (res.truncated) console.error(`[page.mjs] HTML 已截断：${res.nodes} 个节点 / ${res.length} 字符`);
+    if (res?.ok === false) {
+      console.error(`[page.mjs] ${res.reason ?? '读取失败'}`);
+      process.exitCode = 1;
+    } else {
+      console.log(res.html ?? '');
+      if (res.truncated) console.error(`[page.mjs] HTML 已截断：${res.nodes} 个节点 / ${res.length} 字节`);
+    }
   } else if (command === 'eval') {
     out(await cmd('eval', { code: rest[1] ?? '', ...(flags.world ? { world: flags.world } : {}) }));
   } else if (command === 'click') {

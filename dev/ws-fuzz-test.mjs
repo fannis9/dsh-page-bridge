@@ -19,6 +19,7 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const child = spawn(process.execPath, [BRIDGE, '--port', String(port), '--idle-exit', '0', '--log', logFile, '--token-file', tokenFile], {
   stdio: ['ignore', 'ignore', 'pipe'],
 });
+child.stderr.resume();
 let failures = 0;
 const check = (label, ok, detail = '') => {
   console.log(`${ok ? '✓' : '✗'} ${label}${!ok && detail ? `\n    ${detail}` : ''}`);
@@ -125,7 +126,13 @@ for (const [label, payload] of cases) {
 const alive = await fetch(`http://127.0.0.1:${port}/status`, { headers: { authorization: `Bearer ${token}` } }).then((res) => res.json()).catch(() => null);
 check('所有畸形帧之后桥接仍能响应 /status', alive && alive.connected === false, JSON.stringify(alive));
 
-try { child.kill(); } catch { /* ignore */ }
+const stopChild = async () => {
+  if (child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once('close', resolve));
+  try { child.kill(); } catch { /* ignore */ }
+  await Promise.race([exited, sleep(1500)]);
+};
+await stopChild();
 rmSync(workDir, { recursive: true, force: true });
 console.log(`\n${failures ? `✗ ${failures} 个失败` : '✓ WebSocket fuzz 测试通过'}`);
-process.exit(failures ? 1 : 0);
+process.exitCode = failures ? 1 : 0;
