@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BACKGROUND = join(ROOT, 'extension', 'background.js');
 const FRAGMENTS = join(ROOT, 'extension', 'page-op');
-const ORDER = ['aria-snapshot', 'target-resolve', 'page-read', 'key-dispatch'];
+const ORDER = ['aria-snapshot', 'target-resolve', 'page-read', 'key-dispatch', 'actions'];
 const bootstrap = process.argv.includes('--bootstrap');
 
 let source = readFileSync(BACKGROUND, 'utf8');

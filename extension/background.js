@@ -699,24 +699,6 @@ function PAGE_OP(payload) {
     try { return JSON.parse(JSON.stringify(value ?? null)); } catch { return String(value); }
   }
 
-  if (k === 'click') {
-    const el = find(args.selector);
-    if (!el) return { ok: false, reason: 'element not found' };
-    const guard = verifyTarget(el, refOf(args.selector));
-    if (!guard.ok) return guard;
-    el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    const r = el.getBoundingClientRect();
-    const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
-    // NOTE: dispatch mousedown/mouseup for framework listeners, then use el.click()
-    // for the neutral click. Dispatching a synthetic click *as well* would activate
-    // the element twice (e.g. a target=_blank link opening two tabs).
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    if (typeof el.click === 'function') el.click();
-    else el.dispatchEvent(new MouseEvent('click', opts));
-    return { ok: true, ...describe(el) };
-  }
-
   // #region key-dispatch
   /**
    * Synthetic key press that behaves like a real one.
@@ -773,6 +755,25 @@ function PAGE_OP(payload) {
     return { ok: true, key: info.key, keyCode: info.keyCode, repeat: times, tag: node.tagName?.toLowerCase() ?? null };
   };
   // #endregion key-dispatch
+
+  // #region actions
+  if (k === 'click') {
+    const el = find(args.selector);
+    if (!el) return { ok: false, reason: 'element not found' };
+    const guard = verifyTarget(el, refOf(args.selector));
+    if (!guard.ok) return guard;
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    const r = el.getBoundingClientRect();
+    const opts = { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    // NOTE: dispatch mousedown/mouseup for framework listeners, then use el.click()
+    // for the neutral click. Dispatching a synthetic click *as well* would activate
+    // the element twice (e.g. a target=_blank link opening two tabs).
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    if (typeof el.click === 'function') el.click();
+    else el.dispatchEvent(new MouseEvent('click', opts));
+    return { ok: true, ...describe(el) };
+  }
 
   if (k === 'type') {
     const el = find(args.selector);
@@ -854,6 +855,7 @@ function PAGE_OP(payload) {
     try { return { ok: true, count: deepQueryAll(args.selector).length }; }
     catch (error) { return { ok: false, reason: String(error?.message ?? error) }; }
   }
+// #endregion actions
 
   return { ok: false, reason: `unknown kind: ${k}` };
 }

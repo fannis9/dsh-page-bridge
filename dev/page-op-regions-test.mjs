@@ -39,7 +39,7 @@ while ((match = marker.exec(source))) {
 check('所有 PAGE_OP region 成对闭合', stack.length === 0 && failures === 0,
   stack.map((item) => item.name).join(', '));
 
-const expected = ['aria-snapshot', 'target-resolve', 'page-read', 'key-dispatch'];
+const expected = ['aria-snapshot', 'target-resolve', 'page-read', 'key-dispatch', 'actions'];
 const names = regions.map((region) => region.name);
 check('region 名称没有重复且顺序保持依赖关系',
   names.length === new Set(names).size && expected.every((name, i) => names.indexOf(name) === i),
