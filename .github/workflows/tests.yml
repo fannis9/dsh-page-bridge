@@ -46,6 +46,9 @@ jobs:
       - name: CLI 错误处理（text/html selector 失败须非零退出且不打印空内容）
         run: npm run test:cli-errors
 
+      - name: 中英双版文档一致性（代码块逐字节 / 行内代码 / 小节 / 链接 / 互链）
+        run: npm run test:docs-parity
+
       - name: 命令队列 / 实例路由 / WS 帧上限
         run: node dev/bridge-queue-test.mjs
 
