@@ -41,8 +41,15 @@ try {
       state: { url: `https://example.test/path?secret=${i}`, marker: `marker-${i}`, filler: 'x'.repeat(12_000) },
     }));
   }
-  await sleep(250);
-  const content = readFileSync(logFile, 'utf8');
+  // 不再等固定时长：CI 的 Linux runner 在负载下 250ms 可能不够，本测试因此在 #32 偶发失败。
+  // 改为"等到最后一个事件真正落盘"，并给 5 秒上限（超时也继续，让下面的断言给出明确失败）。
+  const deadline = Date.now() + 5000;
+  let content = '';
+  for (;;) {
+    content = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
+    if (content.includes('marker-8') || Date.now() > deadline) break;
+    await sleep(50);
+  }
   const lines = content.trim().split('\n').filter(Boolean);
   check('日志大小不超过配置上限', Buffer.byteLength(content) <= MAX_LOG_BYTES, `${Buffer.byteLength(content)} bytes`);
   check('轮转后仍保留最近两条以上历史', lines.length >= 2, `lines=${lines.length}`);
