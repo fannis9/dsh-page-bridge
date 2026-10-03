@@ -17,14 +17,14 @@
 |---|---|---|
 | setFullAccess 没校验调用者，只是"目前只有 popup 在调" | 属实 | 加 sender 白名单 + 负向测试 |
 | 黑名单只管当前 URL、不管操作效果；navigate 不校验目标 | 属实 | 窄授权改 origin 级委托：navigate/open 事前拒绝 |
-| "不可见不给 ref"只成立于快照阶段，执行层仍可直接找 DOM | 属实（TOCTOU） | 执行层 resolveTarget：可见性 + 快照签名复核 |
+| "不可见不给 ref"只成立于快照阶段，执行层仍可直接找 DOM | 属实（TOCTOU） | 执行层  resolveTarget：可见性 + 快照签名复核 |
 | MAIN world eval 让 origin 隔离失效 | 属实 | 窄授权下禁用 MAIN eval |
 | 任意本地进程可伪装扩展连 /ws；/cmd 等无认证 | 属实 | 本地控制面能力令牌（HTTP + WS） |
 | 端口被占用时 native host 会 relay 给"谁占着端口" | 属实，最严重 | 令牌不匹配即失败关闭（拒绝 relay 并退出） |
 | 没有 per-tab 命令队列；snapshotAfter 可能拍到另一个浏览器 | 属实 | 队列 + 快照固定到"接单的浏览器" |
 | 同浏览器多 Profile 都是 rowser: chrome，无法区分 | 属实 | hello 带 instance，支持 chrome@<前缀> |
 | 手写 WS 解析器无帧长上限、缺畸形帧测试 | 属实 | 单帧 8MB 上限；畸形/超大帧断连 |
-| ackground.js + 内嵌 PAGE_OP 已是维护债 | 属实 | **未做**（拆分需要构建步骤，先保留区块化 + 抽取测试） |
+| background.js + 内嵌 PAGE_OP 已是维护债 | 属实 | **未做**（拆分需要构建步骤，先保留区块化 + 抽取测试） |
 
 ---
 
